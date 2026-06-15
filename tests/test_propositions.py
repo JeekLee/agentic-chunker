@@ -77,3 +77,45 @@ def test_chat_json_exception_falls_back_to_block_text():
 
     props = extract([make_blocks()[1]], cfg=None, chat_json=fake_chat_json)
     assert [p.text for p in props] == ["Dogs bark."]
+
+
+def test_short_block_skips_llm_and_is_verbatim():
+    called = {"n": 0}
+
+    def fake_chat_json(prompt, cfg):
+        called["n"] += 1
+        return ["should not be used"]
+
+    short = Block(text="목적", char_start=0, char_end=2, header="H")
+    props = extract([short], cfg=None, chat_json=fake_chat_json, min_extract_chars=20)
+    assert called["n"] == 0                      # no LLM call for a short block
+    assert [p.text for p in props] == ["목적"]   # emitted verbatim
+    assert props[0].char_start == 0 and props[0].char_end == 2 and props[0].header == "H"
+
+
+def test_block_at_threshold_length_is_extracted():
+    # len("x" * 20) == 20, which is NOT < 20, so it must be extracted.
+    called = {"n": 0}
+
+    def fake_chat_json(prompt, cfg):
+        called["n"] += 1
+        return ["p1", "p2"]
+
+    blk = Block(text="x" * 20, char_start=0, char_end=20, header=None)
+    props = extract([blk], cfg=None, chat_json=fake_chat_json, min_extract_chars=20)
+    assert called["n"] == 1
+    assert [p.text for p in props] == ["p1", "p2"]
+
+
+def test_min_extract_chars_defaults_to_20():
+    called = {"n": 0}
+
+    def fake_chat_json(prompt, cfg):
+        called["n"] += 1
+        return ["x"]
+
+    # 19-char block, default threshold -> skipped
+    blk = Block(text="a" * 19, char_start=0, char_end=19, header=None)
+    props = extract([blk], cfg=None, chat_json=fake_chat_json)
+    assert called["n"] == 0
+    assert [p.text for p in props] == ["a" * 19]
