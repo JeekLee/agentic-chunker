@@ -30,11 +30,14 @@ def test_single_call_clusters_one_section():
 
 def test_sections_grouped_independently_in_order():
     props = [P("Alpha.", "A", 0, 6), P("Beta.", "B", 10, 15)]
+    calls = []
 
     def fake_group(texts, cfg):
+        calls.append(list(texts))
         return [{"proposition_indices": [0], "title": "t", "summary": "s", "keywords": []}]
 
     chunks = assign(props, cfg=None, group=fake_group)
+    assert calls == [["Alpha."], ["Beta."]]   # two separate calls, one per section
     assert [c.text for c in chunks] == ["Alpha.", "Beta."]
     assert [c.index for c in chunks] == [0, 1]
 

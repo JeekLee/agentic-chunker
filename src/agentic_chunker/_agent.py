@@ -9,7 +9,7 @@ one chunk per proposition so content is never dropped.
 """
 from __future__ import annotations
 
-import json
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 from ._common import Chunk, Proposition
@@ -74,7 +74,12 @@ def _own_chunks(props: list[Proposition]) -> list[dict]:
     ]
 
 
-def _group_window(window: list[Proposition], cfg, group, max_props: int) -> list[dict]:
+def _group_window(
+    window: list[Proposition],
+    cfg: LlmConfig | None,
+    group: Callable[[list[str], LlmConfig | None], list | None],
+    max_props: int,
+) -> list[dict]:
     """Return a list of chunk-dicts: {props, title, summary, keywords}."""
     texts = [p.text for p in window]
     clusters = group(texts, cfg)
@@ -100,9 +105,10 @@ def _group_window(window: list[Proposition], cfg, group, max_props: int) -> list
         summary = cl.get("summary") if isinstance(cl.get("summary"), str) else ""
         kw = cl.get("keywords")
         keywords = [k for k in kw if isinstance(k, str)] if isinstance(kw, list) else []
-        for j in range(0, len(members), max(1, max_props)):
+        capped = max(1, max_props)
+        for j in range(0, len(members), capped):
             chunk_dicts.append({
-                "props": members[j:j + max_props],
+                "props": members[j:j + capped],
                 "title": title, "summary": summary, "keywords": keywords,
             })
 
