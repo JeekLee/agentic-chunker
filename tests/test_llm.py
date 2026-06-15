@@ -60,3 +60,8 @@ def test_chat_json_strips_code_fence(monkeypatch):
 def test_chat_json_returns_none_on_garbage(monkeypatch):
     _patch_reply(monkeypatch, "not json at all")
     assert chat_json("give json", CFG) is None
+
+
+def test_default_timeout_is_120():
+    cfg = LlmConfig(url="http://x/v1", api_key="k", model="m")
+    assert cfg.timeout == 120

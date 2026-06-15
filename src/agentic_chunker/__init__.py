@@ -34,7 +34,7 @@ class AgenticChunker:
         max_propositions_per_chunk: int = 10,
         window_size: int = 40,
         min_extract_chars: int = 20,
-        max_concurrency: int = 8,
+        max_concurrency: int = 4,
     ) -> None:
         self._llm = llm
         self._max_props = max_propositions_per_chunk

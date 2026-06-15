@@ -17,7 +17,7 @@ class LlmConfig:
     api_key: str
     model: str      # e.g. "qwen3-30b-a3b"
     temperature: float = 0.0
-    timeout: int = 60
+    timeout: int = 120
 
 
 def chat(prompt: str, cfg: LlmConfig) -> str:
