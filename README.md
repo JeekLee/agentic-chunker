@@ -38,6 +38,14 @@ for c in chunks:
 
 Each `Chunk` has: `index`, `text`, `title`, `summary`, `keywords`, `source_spans`.
 
+### Tuning for your LLM endpoint
+
+Agentic chunking makes many LLM calls. The defaults (`LlmConfig(timeout=120)`,
+`max_concurrency=4`) suit a single self-hosted model. For a fast hosted API you can raise
+`max_concurrency` for throughput; for a large or slow endpoint raise `LlmConfig(timeout=...)`.
+If you see many `chat failed: timed out` lines on stderr, the pipeline is falling back to
+one chunk per proposition — raise the timeout and/or lower `max_concurrency`.
+
 ## How it works
 
 1. **Header pre-split** — the Markdown is split into blocks by ATX headers (sections) and blank lines. Deterministic, no LLM.
