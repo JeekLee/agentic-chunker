@@ -53,7 +53,7 @@ class _OpenChunk:
         self.keywords: list[str] = []
 
 
-def _assign_section(props: list[Proposition], cfg, decide, max_props: int) -> list[_OpenChunk]:
+def _assign_section(props: list[Proposition], cfg: LlmConfig | None, decide, max_props: int) -> list[_OpenChunk]:
     open_chunks: list[_OpenChunk] = []
     next_id = 0
     for p in props:
@@ -91,7 +91,7 @@ def _dedupe_spans(props: list[Proposition]) -> list[tuple[int, int]]:
     return seen
 
 
-def assign(props, cfg, *, decide=_default_decide, max_props: int = 10, concurrency: int = 8):
+def assign(props: list[Proposition], cfg: LlmConfig | None, *, decide=_default_decide, max_props: int = 10, concurrency: int = 8) -> list[Chunk]:
     """Group propositions into Chunks. Sections (by header) are independent."""
     if not props:
         return []
