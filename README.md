@@ -25,7 +25,7 @@ from agentic_chunker import AgenticChunker, LlmConfig, Chunk
 chunker = AgenticChunker(
     llm=LlmConfig(url="http://localhost:10080/v1", api_key="...", model="qwen3-..."),
     max_propositions_per_chunk=10,   # soft cap (~100-200 word sweet spot)
-    max_concurrency=8,               # parallel extraction / section assignment
+    max_concurrency=4,               # parallel extraction / section assignment
 )
 chunks: list[Chunk] = chunker.chunk(markdown_text)
 
@@ -37,6 +37,14 @@ for c in chunks:
 ```
 
 Each `Chunk` has: `index`, `text`, `title`, `summary`, `keywords`, `source_spans`.
+
+### Tuning for your LLM endpoint
+
+Agentic chunking makes many LLM calls. The defaults (`LlmConfig(timeout=120)`,
+`max_concurrency=4`) suit a single self-hosted model. For a fast hosted API you can raise
+`max_concurrency` for throughput; for a large or slow endpoint raise `LlmConfig(timeout=...)`.
+If you see many `chat failed: timed out` lines on stderr, the pipeline is falling back to
+one chunk per proposition — raise the timeout and/or lower `max_concurrency`.
 
 ## How it works
 
