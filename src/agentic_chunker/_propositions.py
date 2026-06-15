@@ -9,8 +9,11 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 
 from ._common import Block, Proposition
+from .llm import LlmConfig
 from .llm import chat_json as _real_chat_json
 
+# Instruction prefix; the block text is appended verbatim (no str.format, so
+# blocks containing literal "{" / "}" can never break prompt construction).
 _PROMPT = """\
 아래 텍스트를 원자적 명제(proposition) 목록으로 분해해 주세요.
 각 명제는 다른 문장에 의존하지 않고 그 자체로 이해되는 하나의 사실이어야 합니다.
@@ -21,20 +24,31 @@ _PROMPT = """\
 - 원문에 없는 내용 추가 금지
 
 텍스트:
-{content}"""
+"""
 
 
-def extract(blocks, cfg, *, chat_json=_real_chat_json, concurrency: int = 8):
-    """Extract propositions from each block. Returns a flat list in block order."""
+def extract(
+    blocks: list[Block],
+    cfg: LlmConfig | None,
+    *,
+    chat_json=_real_chat_json,
+    concurrency: int = 8,
+) -> list[Proposition]:
+    """Extract propositions from each block. Returns a flat list in block order.
+
+    Fail-soft: on any error or empty result for a block, the whole block text is
+    kept as a single proposition.
+    """
     def one(block: Block) -> list[Proposition]:
-        items = chat_json(_PROMPT.format(content=block.text), cfg)
-        if not isinstance(items, list):
-            items = None
-        texts = []
-        if items is not None:
-            for it in items:
-                if isinstance(it, str) and it.strip():
-                    texts.append(it.strip())
+        texts: list[str] = []
+        try:
+            raw = chat_json(_PROMPT + block.text, cfg)
+            if isinstance(raw, list):
+                for it in raw:
+                    if isinstance(it, str) and it.strip():
+                        texts.append(it.strip())
+        except Exception:
+            texts = []
         if not texts:
             texts = [block.text]  # fallback: keep the whole block
         return [
