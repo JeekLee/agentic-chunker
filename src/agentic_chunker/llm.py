@@ -46,7 +46,7 @@ def chat(prompt: str, cfg: LlmConfig) -> str:
         return ""
 
 
-def chat_json(prompt: str, cfg: LlmConfig):
+def chat_json(prompt: str, cfg: LlmConfig) -> object | None:
     """chat() then parse the reply as JSON. Strips ```json fences. None on failure."""
     text = chat(prompt, cfg)
     if not text:
