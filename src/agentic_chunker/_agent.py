@@ -68,6 +68,22 @@ def _dedupe_spans(props: list[Proposition]) -> list[tuple[int, int]]:
     return seen
 
 
+def _display_text(props: list[Proposition]) -> str:
+    if not any(p.source_text for p in props):
+        return "\n".join(p.text for p in props)
+
+    seen: list[tuple[int, int, str]] = []
+    texts: list[str] = []
+    for p in props:
+        text = p.source_text or p.text
+        key = (p.char_start, p.char_end, text)
+        if key in seen:
+            continue
+        seen.append(key)
+        texts.append(text)
+    return "\n\n".join(texts)
+
+
 def _own_chunks(props: list[Proposition]) -> list[dict]:
     """Fallback: one chunk per proposition (used for failures / unassigned)."""
     return [
@@ -156,13 +172,15 @@ def assign(
     for window_chunks in per_window:
         for cd in window_chunks:
             members = cd["props"]
+            embedding_text = "\n".join(p.text for p in members)
             chunks.append(Chunk(
                 index=idx,
-                text="\n".join(p.text for p in members),
+                text=_display_text(members),
                 title=cd["title"],
                 summary=cd["summary"],
                 keywords=cd["keywords"],
                 source_spans=_dedupe_spans(members),
+                embedding_text=embedding_text,
             ))
             idx += 1
     return chunks

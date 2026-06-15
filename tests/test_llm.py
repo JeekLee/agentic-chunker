@@ -57,6 +57,11 @@ def test_chat_json_strips_code_fence(monkeypatch):
     assert chat_json("give json", CFG) == {"a": 1}
 
 
+def test_chat_json_extracts_json_from_wrapped_reply(monkeypatch):
+    _patch_reply(monkeypatch, 'Here is JSON:\n```json\n[{"a": 1}]\n```\nDone.')
+    assert chat_json("give json", CFG) == [{"a": 1}]
+
+
 def test_chat_json_returns_none_on_garbage(monkeypatch):
     _patch_reply(monkeypatch, "not json at all")
     assert chat_json("give json", CFG) is None

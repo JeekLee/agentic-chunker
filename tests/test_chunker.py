@@ -6,19 +6,12 @@ CFG = LlmConfig(url="http://x/v1", api_key="k", model="m")
 
 
 def test_chunk_end_to_end_wiring(monkeypatch):
-    # Stub extraction: one proposition per block (block text passthrough).
-    def fake_extract(blocks, cfg, **kw):
-        from agentic_chunker._common import Proposition
-        return [Proposition(b.text, b.char_start, b.char_end, b.header) for b in blocks]
+    def fake_group_units(units, cfg, **kw):
+        return [Chunk(index=i, text=u.text, title=u.text[:5], summary=u.text,
+                      keywords=[], source_spans=u.source_spans)
+                for i, u in enumerate(units)]
 
-    # Stub assign: one chunk per proposition, echoing text.
-    def fake_assign(props, cfg, **kw):
-        return [Chunk(index=i, text=p.text, title=p.text[:5], summary=p.text,
-                      keywords=[], source_spans=[(p.char_start, p.char_end)])
-                for i, p in enumerate(props)]
-
-    monkeypatch.setattr(ac, "_extract", fake_extract)
-    monkeypatch.setattr(ac, "_assign", fake_assign)
+    monkeypatch.setattr(ac, "_group_units", fake_group_units)
 
     md = "# H\n\nAlpha para.\n\nBeta para."
     chunker = AgenticChunker(llm=CFG)
@@ -38,25 +31,21 @@ def test_exports_available():
     assert hasattr(ac, "AgenticChunker")
     assert hasattr(ac, "LlmConfig")
     assert hasattr(ac, "Chunk")
+    assert hasattr(ac, "DocumentGraph")
+    assert hasattr(ac, "DomainSchema")
+    assert hasattr(ac, "DomainExtractor")
 
 
 def test_new_params_forwarded_to_stages(monkeypatch):
     captured = {}
 
-    def fake_extract(blocks, cfg, **kw):
-        from agentic_chunker._common import Proposition
-        captured["min_extract_chars"] = kw.get("min_extract_chars")
-        captured["extract_concurrency"] = kw.get("concurrency")
-        return [Proposition(b.text, b.char_start, b.char_end, b.header) for b in blocks]
-
-    def fake_assign(props, cfg, **kw):
+    def fake_group_units(units, cfg, **kw):
         captured["window_size"] = kw.get("window_size")
-        captured["max_props"] = kw.get("max_props")
-        captured["assign_concurrency"] = kw.get("concurrency")
-        return [Chunk(index=i, text=p.text) for i, p in enumerate(props)]
+        captured["max_units"] = kw.get("max_units")
+        captured["group_concurrency"] = kw.get("concurrency")
+        return [Chunk(index=i, text=u.text) for i, u in enumerate(units)]
 
-    monkeypatch.setattr(ac, "_extract", fake_extract)
-    monkeypatch.setattr(ac, "_assign", fake_assign)
+    monkeypatch.setattr(ac, "_group_units", fake_group_units)
 
     chunker = AgenticChunker(
         llm=CFG,
@@ -67,33 +56,22 @@ def test_new_params_forwarded_to_stages(monkeypatch):
     )
     chunker.chunk("# H\n\nAlpha para.")
 
-    assert captured["min_extract_chars"] == 15
-    assert captured["extract_concurrency"] == 3
     assert captured["window_size"] == 25
-    assert captured["max_props"] == 7
-    assert captured["assign_concurrency"] == 3
+    assert captured["max_units"] == 7
+    assert captured["group_concurrency"] == 3
 
 
-def test_default_concurrency_and_min_extract_chars(monkeypatch):
+def test_default_concurrency_and_window_size(monkeypatch):
     captured = {}
 
-    def fake_extract(blocks, cfg, **kw):
-        from agentic_chunker._common import Proposition
-        captured["extract_concurrency"] = kw.get("concurrency")
-        captured["min_extract_chars"] = kw.get("min_extract_chars")
-        return [Proposition(b.text, b.char_start, b.char_end, b.header) for b in blocks]
-
-    def fake_assign(props, cfg, **kw):
-        captured["assign_concurrency"] = kw.get("concurrency")
+    def fake_group_units(units, cfg, **kw):
+        captured["group_concurrency"] = kw.get("concurrency")
         captured["window_size"] = kw.get("window_size")
-        return [Chunk(index=i, text=p.text) for i, p in enumerate(props)]
+        return [Chunk(index=i, text=u.text) for i, u in enumerate(units)]
 
-    monkeypatch.setattr(ac, "_extract", fake_extract)
-    monkeypatch.setattr(ac, "_assign", fake_assign)
+    monkeypatch.setattr(ac, "_group_units", fake_group_units)
 
     AgenticChunker(llm=CFG).chunk("# H\n\nAlpha para.")
 
-    assert captured["extract_concurrency"] == 4      # new default max_concurrency
-    assert captured["assign_concurrency"] == 4
-    assert captured["min_extract_chars"] == 20       # unchanged default
-    assert captured["window_size"] == 40             # unchanged default
+    assert captured["group_concurrency"] == 4
+    assert captured["window_size"] == 40
