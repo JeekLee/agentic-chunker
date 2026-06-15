@@ -1,7 +1,7 @@
 # agentic-chunker v2.2 — Tune Defaults for Local Models
 
 **Date:** 2026-06-15
-**Status:** Approved (design); implementation pending
+**Status:** Implemented
 **Builds on:** the v2 batch design + v2.1 dedupe design.
 
 ## Motivation
