@@ -1,7 +1,7 @@
 [project]
 name = "agentic-chunker"
 version = "0.1.0"
-description = "Proposition-based agentic chunking for RAG, in pure Python"
+description = "Source-preserving agentic chunking for RAG, in pure Python"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

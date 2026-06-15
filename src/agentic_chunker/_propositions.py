@@ -63,6 +63,7 @@ def extract(
                 char_start=block.char_start,
                 char_end=block.char_end,
                 header=block.header,
+                source_text=block.text,
             )
             for t in texts
         ]

@@ -1,4 +1,6 @@
-from agentic_chunker._common import Block, Proposition, Chunk
+from dataclasses import asdict
+
+from agentic_chunker._common import Block, Proposition, Chunk, DocumentGraph
 
 
 def test_block_holds_text_offsets_and_header():
@@ -13,13 +15,39 @@ def test_proposition_carries_source_span_and_header():
     assert p.text == "X is Y."
     assert (p.char_start, p.char_end) == (10, 20)
     assert p.header == "Intro"
+    assert p.source_text == ""
 
 
 def test_chunk_has_all_output_fields_with_defaults():
     c = Chunk(index=0, text="X is Y.")
     assert c.index == 0
+    assert c.source == "X is Y."
     assert c.text == "X is Y."
     assert c.title == ""
     assert c.summary == ""
     assert c.keywords == []
+    assert c.questions_answered == []
+    assert isinstance(c.document_graph, DocumentGraph)
     assert c.source_spans == []
+    assert c.embedding_text == ""
+    assert c.metadata == {}
+
+
+def test_chunk_dataclass_serializes_public_payload_only():
+    c = Chunk(
+        index=7,
+        text="X is Y.",
+        summary="s",
+        keywords=["x"],
+        questions_answered=["What is X?"],
+        title="internal",
+        metadata={"internal": True},
+    )
+
+    assert asdict(c).keys() == {
+        "source",
+        "summary",
+        "keywords",
+        "questions_answered",
+        "document_graph",
+    }

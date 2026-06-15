@@ -147,3 +147,18 @@ def test_empty_title_split_marker_has_no_leading_space():
 
     chunks = assign(props, cfg=None, group=fake_group, window_size=100, max_props=1)
     assert [c.title for c in chunks] == ["(1/3)", "(2/3)", "(3/3)"]
+
+
+def test_chunk_text_preserves_original_source_text_when_available():
+    props = [
+        Proposition("Cats purr.", 0, 27, "S", source_text="Cats purr. They also sleep."),
+        Proposition("Cats sleep.", 0, 27, "S", source_text="Cats purr. They also sleep."),
+    ]
+
+    def fake_group(texts, cfg, max_props):
+        return [{"proposition_indices": [0, 1], "title": "Cats", "summary": "s", "keywords": []}]
+
+    chunks = assign(props, cfg=None, group=fake_group)
+
+    assert chunks[0].text == "Cats purr. They also sleep."
+    assert chunks[0].embedding_text == "Cats purr.\nCats sleep."
