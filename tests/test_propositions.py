@@ -49,3 +49,31 @@ def test_non_string_items_are_ignored():
 
     props = extract([make_blocks()[0]], cfg=None, chat_json=fake_chat_json)
     assert [p.text for p in props] == ["good"]
+
+
+def test_all_junk_items_fall_back_to_block_text():
+    def fake_chat_json(prompt, cfg):
+        return ["  ", 123, {"x": 1}]
+
+    props = extract([make_blocks()[0]], cfg=None, chat_json=fake_chat_json)
+    assert [p.text for p in props] == ["Cats purr. They also sleep."]
+
+
+def test_block_text_with_braces_does_not_crash():
+    block = Block(text='config = {"a": 1} and {b}', char_start=0, char_end=25, header=None)
+
+    def fake_chat_json(prompt, cfg):
+        # The full block text (including braces) must be passed through intact.
+        assert 'config = {"a": 1} and {b}' in prompt
+        return ["config has a=1"]
+
+    props = extract([block], cfg=None, chat_json=fake_chat_json)
+    assert [p.text for p in props] == ["config has a=1"]
+
+
+def test_chat_json_exception_falls_back_to_block_text():
+    def fake_chat_json(prompt, cfg):
+        raise RuntimeError("boom")
+
+    props = extract([make_blocks()[1]], cfg=None, chat_json=fake_chat_json)
+    assert [p.text for p in props] == ["Dogs bark."]
