@@ -33,24 +33,30 @@ def extract(
     *,
     chat_json=_real_chat_json,
     concurrency: int = 8,
+    min_extract_chars: int = 20,
 ) -> list[Proposition]:
     """Extract propositions from each block. Returns a flat list in block order.
 
     Fail-soft: on any error or empty result for a block, the whole block text is
-    kept as a single proposition.
+    kept as a single proposition. Blocks shorter than ``min_extract_chars`` skip
+    the LLM entirely and are emitted verbatim (avoids hallucinating context for
+    bare labels / headings).
     """
     def one(block: Block) -> list[Proposition]:
-        texts: list[str] = []
-        try:
-            raw = chat_json(_PROMPT + block.text, cfg)
-            if isinstance(raw, list):
-                for it in raw:
-                    if isinstance(it, str) and it.strip():
-                        texts.append(it.strip())
-        except Exception:
+        if len(block.text) < min_extract_chars:
+            texts = [block.text]
+        else:
             texts = []
-        if not texts:
-            texts = [block.text]  # fallback: keep the whole block
+            try:
+                raw = chat_json(_PROMPT + block.text, cfg)
+                if isinstance(raw, list):
+                    for it in raw:
+                        if isinstance(it, str) and it.strip():
+                            texts.append(it.strip())
+            except Exception:
+                texts = []
+            if not texts:
+                texts = [block.text]  # fallback: keep the whole block
         return [
             Proposition(
                 text=t,
