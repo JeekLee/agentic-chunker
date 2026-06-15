@@ -4,8 +4,8 @@ Propositions are partitioned by header (section); each section is split into
 contiguous windows of at most ``window_size``. One LLM ``group`` call per window
 clusters its propositions into chunks (returning index clusters with refreshed
 title/summary/keywords). Windows run in parallel. A ``max_props`` post-cap splits
-oversized clusters; unassigned propositions and grouping failures fall back to
-one chunk per proposition so content is never dropped.
+oversized clusters into ``(k/N)``-suffixed sub-chunks; unassigned propositions and
+grouping failures fall back to one chunk per proposition so content is never dropped.
 """
 from __future__ import annotations
 
@@ -19,7 +19,8 @@ from .llm import chat_json as _real_chat_json
 _PROMPT = """\
 당신은 RAG용 청크를 구성하는 편집자입니다.
 아래 번호가 매겨진 명제 목록을 의미적으로 일관된 청크로 묶어 주세요.
-같은 주제의 명제끼리 한 청크로 모으고, 주제가 다르면 다른 청크로 나눕니다.
+같은 주제의 명제끼리 한 청크로 모으되, 한 청크에는 명제를 약 {max_props}개 이하로 담고,
+주제가 길면 더 잘게 나누세요. 서로 다른 주제는 반드시 다른 청크로 분리합니다.
 
 명제 목록:
 {props}
@@ -32,9 +33,10 @@ _PROMPT = """\
 - title/summary/keywords는 해당 청크 내용을 반영합니다."""
 
 
-def _default_group(prop_texts: list[str], cfg: LlmConfig | None):
+def _default_group(prop_texts: list[str], cfg: LlmConfig | None, max_props: int):
     numbered = "\n".join(f"{i}: {t}" for i, t in enumerate(prop_texts))
-    payload = _real_chat_json(_PROMPT.replace("{props}", numbered), cfg)
+    prompt = _PROMPT.replace("{max_props}", str(max_props)).replace("{props}", numbered)
+    payload = _real_chat_json(prompt, cfg)
     return payload if isinstance(payload, list) else None
 
 
@@ -77,12 +79,12 @@ def _own_chunks(props: list[Proposition]) -> list[dict]:
 def _group_window(
     window: list[Proposition],
     cfg: LlmConfig | None,
-    group: Callable[[list[str], LlmConfig | None], list | None],
+    group: Callable[[list[str], LlmConfig | None, int], list | None],
     max_props: int,
 ) -> list[dict]:
     """Return a list of chunk-dicts: {props, title, summary, keywords}."""
     texts = [p.text for p in window]
-    clusters = group(texts, cfg)
+    clusters = group(texts, cfg, max_props)
     if not isinstance(clusters, list):
         return _own_chunks(window)
 
@@ -106,10 +108,18 @@ def _group_window(
         kw = cl.get("keywords")
         keywords = [k for k in kw if isinstance(k, str)] if isinstance(kw, list) else []
         capped = max(1, max_props)
-        for j in range(0, len(members), capped):
+        parts = [members[j:j + capped] for j in range(0, len(members), capped)]
+        n = len(parts)
+        for k, part in enumerate(parts, start=1):
+            if n == 1:
+                part_title = title
+            elif title:
+                part_title = f"{title} ({k}/{n})"
+            else:
+                part_title = f"({k}/{n})"
             chunk_dicts.append({
-                "props": members[j:j + capped],
-                "title": title, "summary": summary, "keywords": keywords,
+                "props": part,
+                "title": part_title, "summary": summary, "keywords": list(keywords),
             })
 
     leftover = [window[i] for i in range(len(window)) if i not in assigned]
@@ -124,7 +134,7 @@ def assign(
     props: list[Proposition],
     cfg: LlmConfig | None,
     *,
-    group=_default_group,
+    group: Callable[[list[str], LlmConfig | None, int], list | None] = _default_group,
     max_props: int = 10,
     window_size: int = 40,
     concurrency: int = 8,
