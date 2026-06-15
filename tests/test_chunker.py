@@ -38,3 +38,37 @@ def test_exports_available():
     assert hasattr(ac, "AgenticChunker")
     assert hasattr(ac, "LlmConfig")
     assert hasattr(ac, "Chunk")
+
+
+def test_new_params_forwarded_to_stages(monkeypatch):
+    captured = {}
+
+    def fake_extract(blocks, cfg, **kw):
+        from agentic_chunker._common import Proposition
+        captured["min_extract_chars"] = kw.get("min_extract_chars")
+        captured["extract_concurrency"] = kw.get("concurrency")
+        return [Proposition(b.text, b.char_start, b.char_end, b.header) for b in blocks]
+
+    def fake_assign(props, cfg, **kw):
+        captured["window_size"] = kw.get("window_size")
+        captured["max_props"] = kw.get("max_props")
+        captured["assign_concurrency"] = kw.get("concurrency")
+        return [Chunk(index=i, text=p.text) for i, p in enumerate(props)]
+
+    monkeypatch.setattr(ac, "_extract", fake_extract)
+    monkeypatch.setattr(ac, "_assign", fake_assign)
+
+    chunker = AgenticChunker(
+        llm=CFG,
+        max_propositions_per_chunk=7,
+        window_size=25,
+        min_extract_chars=15,
+        max_concurrency=3,
+    )
+    chunker.chunk("# H\n\nAlpha para.")
+
+    assert captured["min_extract_chars"] == 15
+    assert captured["extract_concurrency"] == 3
+    assert captured["window_size"] == 25
+    assert captured["max_props"] == 7
+    assert captured["assign_concurrency"] == 3

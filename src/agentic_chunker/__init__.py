@@ -21,8 +21,10 @@ class AgenticChunker:
 
     Args:
         llm: LlmConfig for an OpenAI-compatible endpoint.
-        max_propositions_per_chunk: soft cap aligning chunks to the ~100-200 word sweet spot.
-        max_concurrency: thread cap for parallel extraction and section assignment.
+        max_propositions_per_chunk: post-cap; clusters larger than this are split.
+        window_size: propositions per grouping call; larger sections are windowed.
+        min_extract_chars: blocks shorter than this skip LLM extraction (emitted verbatim).
+        max_concurrency: thread cap for parallel extraction and window grouping.
     """
 
     def __init__(
@@ -30,21 +32,31 @@ class AgenticChunker:
         *,
         llm: LlmConfig,
         max_propositions_per_chunk: int = 10,
+        window_size: int = 40,
+        min_extract_chars: int = 20,
         max_concurrency: int = 8,
     ) -> None:
         self._llm = llm
         self._max_props = max_propositions_per_chunk
+        self._window_size = window_size
+        self._min_extract_chars = min_extract_chars
         self._concurrency = max_concurrency
 
     def chunk(self, markdown: str) -> list[Chunk]:
         blocks = _split(markdown)
         if not blocks:
             return []
-        props = _extract(blocks, self._llm, concurrency=self._concurrency)
+        props = _extract(
+            blocks,
+            self._llm,
+            concurrency=self._concurrency,
+            min_extract_chars=self._min_extract_chars,
+        )
         return _assign(
             props,
             self._llm,
             max_props=self._max_props,
+            window_size=self._window_size,
             concurrency=self._concurrency,
         )
 
