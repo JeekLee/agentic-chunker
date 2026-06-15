@@ -23,8 +23,8 @@ def split(markdown: str) -> list[Block]:
     buf_start = 0
     pos = 0
 
-    def flush(end: int) -> None:
-        nonlocal buf, buf_start
+    def flush() -> None:
+        nonlocal buf
         if not buf:
             return
         text = "\n".join(buf).strip()
@@ -40,15 +40,15 @@ def split(markdown: str) -> list[Block]:
 
         m = _HEADER_RE.match(stripped)
         if m:
-            flush(line_start)
+            flush()
             header = m.group(2).strip()
             continue
         if not stripped:
-            flush(line_start)
+            flush()
             continue
         if not buf:
-            buf_start = line_start
-        buf.append(line.rstrip("\n"))
+            buf_start = line_start + (len(line) - len(line.lstrip()))
+        buf.append(line.rstrip("\r\n"))
 
-    flush(pos)
+    flush()
     return blocks

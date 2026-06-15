@@ -39,3 +39,21 @@ def test_char_offsets_point_into_source():
     assert len(blocks) == 1
     b = blocks[0]
     assert md[b.char_start:b.char_end] == "Hello there."
+
+
+def test_multiline_paragraph_offsets_recover_text():
+    md = "First line\nsecond line"
+    blocks = split(md)
+    assert len(blocks) == 1
+    b = blocks[0]
+    assert b.text == "First line\nsecond line"
+    assert md[b.char_start:b.char_end] == b.text
+
+
+def test_indented_block_char_start_skips_leading_whitespace():
+    md = "   indented text"
+    blocks = split(md)
+    assert len(blocks) == 1
+    b = blocks[0]
+    assert b.text == "indented text"
+    assert md[b.char_start:b.char_end] == "indented text"
