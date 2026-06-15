@@ -127,3 +127,23 @@ def test_group_failure_falls_back_to_one_chunk_per_proposition():
 
 def test_empty_props_returns_empty():
     assert assign([], cfg=None, group=lambda t, c, m: []) == []
+
+
+def test_group_empty_list_falls_back_to_own_chunks():
+    props = [P("a", "S", 0, 2), P("b", "S", 4, 6)]
+
+    def fake_group(texts, cfg, max_props):
+        return []  # valid list, zero clusters
+
+    chunks = assign(props, cfg=None, group=fake_group)
+    assert [c.text for c in chunks] == ["a", "b"]
+
+
+def test_empty_title_split_marker_has_no_leading_space():
+    props = [P(f"f{i}", "S", 0, 2) for i in range(3)]
+
+    def fake_group(texts, cfg, max_props):
+        return [{"proposition_indices": [0, 1, 2], "title": "", "summary": "s", "keywords": []}]
+
+    chunks = assign(props, cfg=None, group=fake_group, window_size=100, max_props=1)
+    assert [c.title for c in chunks] == ["(1/3)", "(2/3)", "(3/3)"]

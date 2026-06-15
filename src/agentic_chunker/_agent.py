@@ -111,10 +111,15 @@ def _group_window(
         parts = [members[j:j + capped] for j in range(0, len(members), capped)]
         n = len(parts)
         for k, part in enumerate(parts, start=1):
-            part_title = title if n == 1 else f"{title} ({k}/{n})"
+            if n == 1:
+                part_title = title
+            elif title:
+                part_title = f"{title} ({k}/{n})"
+            else:
+                part_title = f"({k}/{n})"
             chunk_dicts.append({
                 "props": part,
-                "title": part_title, "summary": summary, "keywords": keywords,
+                "title": part_title, "summary": summary, "keywords": list(keywords),
             })
 
     leftover = [window[i] for i in range(len(window)) if i not in assigned]
@@ -129,7 +134,7 @@ def assign(
     props: list[Proposition],
     cfg: LlmConfig | None,
     *,
-    group=_default_group,
+    group: Callable[[list[str], LlmConfig | None, int], list | None] = _default_group,
     max_props: int = 10,
     window_size: int = 40,
     concurrency: int = 8,
