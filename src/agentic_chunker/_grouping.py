@@ -11,6 +11,7 @@ from .llm import LlmConfig
 from .llm import chat_json as _real_chat_json
 
 _MAX_CHUNK_SOURCE_CHARS = 6000
+_MAX_GROUP_PROMPT_CHARS = 9000
 _TABLE_PAYLOAD_CHARS = 700
 _TEXT_PAYLOAD_CHARS = 650
 _TINY_SOURCE_CHARS = 20
@@ -102,7 +103,13 @@ def group_units(
     if not units:
         return []
     group_fn = group or _default_group
-    windows = _windows(units, window_size)
+    max_prompt_chars = _MAX_GROUP_PROMPT_CHARS if cfg is not None else None
+    windows = _windows(
+        units,
+        window_size,
+        max_units=max_units,
+        max_prompt_chars=max_prompt_chars,
+    )
 
     def run(window: list[Chunk]) -> list[dict]:
         return _group_window(window, cfg, group_fn, max_units)
@@ -125,18 +132,51 @@ def group_units(
 
 
 def _default_group(units: list[Chunk], cfg: LlmConfig | None, max_units: int):
-    payload = [_unit_payload(i, unit) for i, unit in enumerate(units)]
-    prompt = _PROMPT.replace("{max_units}", str(max_units)).replace(
-        "{units}",
-        json.dumps(payload, ensure_ascii=False, indent=2),
-    )
-    raw = _real_chat_json(prompt, cfg)
+    raw = _real_chat_json(_group_prompt(units, max_units), cfg)
     return raw if isinstance(raw, list) else None
 
 
-def _windows(units: list[Chunk], window_size: int) -> list[list[Chunk]]:
+def _group_prompt(units: list[Chunk], max_units: int) -> str:
+    payload = [_unit_payload(i, unit) for i, unit in enumerate(units)]
+    return _PROMPT.replace("{max_units}", str(max_units)).replace(
+        "{units}",
+        json.dumps(payload, ensure_ascii=False, indent=2),
+    )
+
+
+def _windows(
+    units: list[Chunk],
+    window_size: int,
+    *,
+    max_units: int = 10,
+    max_prompt_chars: int | None = None,
+) -> list[list[Chunk]]:
     size = max(1, window_size)
-    return [units[i:i + size] for i in range(0, len(units), size)]
+    windows: list[list[Chunk]] = []
+    current: list[Chunk] = []
+
+    for unit in units:
+        candidate = [*current, unit]
+        if current and (
+            len(candidate) > size
+            or _exceeds_prompt_budget(candidate, max_units, max_prompt_chars)
+        ):
+            windows.append(current)
+            current = [unit]
+        else:
+            current = candidate
+
+    if current:
+        windows.append(current)
+    return windows
+
+
+def _exceeds_prompt_budget(
+    units: list[Chunk],
+    max_units: int,
+    max_prompt_chars: int | None,
+) -> bool:
+    return max_prompt_chars is not None and len(_group_prompt(units, max_units)) > max_prompt_chars
 
 
 def _unit_payload(local_id: int, unit: Chunk) -> dict:
