@@ -175,6 +175,11 @@ LLM_MODEL=qwen3-... \
   --gold-query-file /tmp/mdout/gold_queries.json
 ```
 
+The `llm-smoke` preset keeps aggregate LLM mode enabled and uses
+`window_size=20` by default to reduce model calls while preserving smoke-test
+quality signals. Pass `--window-size` or set `window_size` in a profile file to
+override it for endpoint-specific tuning.
+
 For mixed corpora, pass file-specific gold queries so retrieval checks are not
 averaged against unrelated documents:
 
@@ -198,7 +203,7 @@ You can also save benchmark settings as a profile file:
 ```json
 {
   "name": "mdout-llm-smoke",
-  "mode": "llm",
+  "profile": "llm-smoke",
   "paths": [
     "/tmp/mdout/03_diagram_pdf.md",
     "/tmp/mdout/03_diagram_hwp.md"
@@ -206,7 +211,6 @@ You can also save benchmark settings as a profile file:
   "gold_query_file": "/tmp/mdout/gold_queries.json",
   "compare_report": "/tmp/mdout/reports/llm_smoke_baseline.json",
   "save_report": "/tmp/mdout/reports/llm_smoke_current.json",
-  "aggregate_only": true,
   "max_concurrency": 4,
   "timeout": 180
 }
