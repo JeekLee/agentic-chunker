@@ -135,6 +135,10 @@ LLM_MODEL=qwen3-... \
 .venv/bin/python examples/evaluate_md.py /tmp/mdout/*.md --no-llm --aggregate-only
 ```
 
+The aggregate report includes tiny chunk breakdowns by kind, representative
+examples, direct lexical `gold_hit_at_5`, and graph-expanded
+`expanded_gold_hit_at_5`.
+
 For mixed corpora, pass file-specific gold queries so retrieval checks are not
 averaged against unrelated documents:
 
