@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 from agentic_chunker._models import Chunk
@@ -47,7 +48,35 @@ def test_aggregate_reports_sums_counts_and_averages_ratios() -> None:
     assert aggregate["chunking_quality"]["unit_coverage_ok"] is False
     assert aggregate["graph_quality"]["avg_table_reference_coverage"] == 0.75
     assert aggregate["graph_quality"]["files_with_missing_table_refs"] == 1
+    assert aggregate["search_quality_expected"]["gold_query_files"] == 2
+    assert aggregate["search_quality_expected"]["gold_query_count"] == 2
     assert aggregate["search_quality_expected"]["gold_hit_at_5"] == 0.75
+
+
+def test_gold_query_manifest_matches_defaults_paths_and_names(tmp_path: Path) -> None:
+    evaluator = _load_evaluator()
+    target = tmp_path / "target.md"
+    manifest_path = tmp_path / "gold_queries.json"
+    manifest_path.write_text(
+        json.dumps({
+            "default": ["공통 질의::공통"],
+            "files": {
+                "target.md": ["파일명 질의::파일명"],
+                str(target.resolve()): ["절대경로 질의::절대경로"],
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    manifest = evaluator._load_gold_query_manifest(manifest_path)
+    queries = evaluator._gold_queries_for_path(target, ["CLI 질의::CLI"], manifest)
+
+    assert queries == [
+        "CLI 질의::CLI",
+        "공통 질의::공통",
+        "절대경로 질의::절대경로",
+        "파일명 질의::파일명",
+    ]
 
 
 def _report(
@@ -85,6 +114,6 @@ def _report(
             "chunks_missing_keywords": 0,
             "chunks_with_questions_lt_2": 0,
             "table_context_coverage": table_coverage,
-            "lexical_gold_queries": {"hit_at_5": table_coverage},
+            "lexical_gold_queries": {"count": 1, "hit_at_5": table_coverage},
         },
     }
