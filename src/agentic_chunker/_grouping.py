@@ -9,6 +9,10 @@ from ._models import Chunk
 from .llm import LlmConfig
 from .llm import chat_json as _real_chat_json
 
+_MAX_CHUNK_SOURCE_CHARS = 6000
+_TABLE_PAYLOAD_CHARS = 700
+_TEXT_PAYLOAD_CHARS = 650
+
 _PROMPT = """\
 당신은 RAG 인덱싱용 청크 편집자입니다.
 아래 evidence unit 목록을 의미적으로 일관된 청크로 묶어 주세요.
@@ -120,12 +124,29 @@ def _unit_payload(local_id: int, unit: Chunk) -> dict:
         "kind": common.get("chunk_kind", "text"),
         "section_path": common.get("section_path", []),
         "title": unit.title,
-        "summary": unit.summary,
-        "keywords": unit.keywords,
-        "table": table,
-        "embedding_hint": _truncate(unit.embedding_text, 1800),
-        "text_preview": _truncate(unit.text, 700),
+        "summary": _truncate(unit.summary, 350),
+        "keywords": unit.keywords[:12],
+        "table": _compact_table(table),
+        "content": _payload_content(unit, common),
     }
+
+
+def _payload_content(unit: Chunk, common: dict) -> str:
+    kind = common.get("chunk_kind", "text")
+    if kind in {"table", "table_part", "table_caption"}:
+        return _truncate(unit.embedding_text or unit.text, _TABLE_PAYLOAD_CHARS)
+    return _truncate(unit.text or unit.embedding_text, _TEXT_PAYLOAD_CHARS)
+
+
+def _compact_table(table: dict) -> dict:
+    if not table:
+        return {}
+    keys = ("table_id", "headers", "row_count", "part_index", "part_total")
+    compact = {key: table[key] for key in keys if key in table and table[key] is not None}
+    headers = compact.get("headers")
+    if isinstance(headers, list):
+        compact["headers"] = [str(header)[:80] for header in headers[:12]]
+    return compact
 
 
 def _group_window(
@@ -163,7 +184,7 @@ def _group_window(
         questions_answered = [q for q in qa if isinstance(q, str)] if isinstance(qa, list) else []
 
         capped = max(1, max_units)
-        parts = [members[j:j + capped] for j in range(0, len(members), capped)]
+        parts = _split_members(members, max_units=capped, max_source_chars=_MAX_CHUNK_SOURCE_CHARS)
         n = len(parts)
         for k, part in enumerate(parts, start=1):
             part_title = title
@@ -197,6 +218,32 @@ def _own_chunks(units: list[Chunk]) -> list[dict]:
         }
         for unit in units
     ]
+
+
+def _split_members(
+    members: list[Chunk],
+    *,
+    max_units: int,
+    max_source_chars: int,
+) -> list[list[Chunk]]:
+    parts: list[list[Chunk]] = []
+    current: list[Chunk] = []
+    current_chars = 0
+
+    for member in members:
+        member_chars = len(member.source)
+        would_exceed_units = len(current) >= max_units
+        would_exceed_chars = current and current_chars + member_chars > max_source_chars
+        if would_exceed_units or would_exceed_chars:
+            parts.append(current)
+            current = []
+            current_chars = 0
+        current.append(member)
+        current_chars += member_chars
+
+    if current:
+        parts.append(current)
+    return parts
 
 
 def _final_chunk(index: int, units: list[Chunk], cd: dict) -> Chunk:

@@ -122,6 +122,18 @@ Agentic chunking makes LLM calls during grouping. The defaults (`LlmConfig(timeo
 If you see many `chat failed: timed out` lines on stderr, the pipeline is falling back to
 one chunk per evidence unit — raise the timeout and/or lower `max_concurrency`.
 
+Use the Markdown evaluator to track speed, chunking quality, graph quality, and
+expected search quality on real files:
+
+```bash
+LLM_URL=http://localhost:10080/v1 \
+LLM_API_KEY=... \
+LLM_MODEL=qwen3-... \
+.venv/bin/python examples/evaluate_md.py /tmp/mdout/val_01_image_hwpx.md
+
+.venv/bin/python examples/evaluate_md.py /tmp/mdout/val_01_image_hwpx.md --no-llm
+```
+
 ## How it works
 
 1. **Header/block pre-split** — Markdown is split into source blocks by ATX headers and blank lines. Deterministic, no LLM.
