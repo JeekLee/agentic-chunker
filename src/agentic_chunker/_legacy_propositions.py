@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
-from ._common import Block, Proposition
+from ._models import Block, Proposition
 from .llm import LlmConfig
 from .llm import chat_json as _real_chat_json
 

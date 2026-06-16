@@ -5,7 +5,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 import json
 
-from ._common import Chunk
+from ._models import Chunk
 from .llm import LlmConfig
 from .llm import chat_json as _real_chat_json
 
@@ -87,27 +87,17 @@ def group_units(
         per_window = list(ex.map(run, windows))
 
     chunks: list[Chunk] = []
-    unit_to_chunk: dict[int, int] = {}
     for window_chunks in per_window:
         for cd in window_chunks:
             members = cd["units"]
             chunk = _final_chunk(len(chunks), members, cd)
             chunks.append(chunk)
-            for unit in members:
-                unit_to_chunk[unit.index] = chunk.index
-
-    unit_table_ids = {
-        unit.index: unit.metadata.get("table", {}).get("table_id", "")
-        for unit in units
-    }
-    _link_final_chunk_references(chunks, unit_to_chunk, unit_table_ids)
     _enrich_missing_metadata(chunks, cfg, concurrency)
     return chunks
 
 
 def _default_group(units: list[Chunk], cfg: LlmConfig | None, max_units: int):
-    global_to_local = {unit.index: i for i, unit in enumerate(units)}
-    payload = [_unit_payload(i, unit, global_to_local) for i, unit in enumerate(units)]
+    payload = [_unit_payload(i, unit) for i, unit in enumerate(units)]
     prompt = _PROMPT.replace("{max_units}", str(max_units)).replace(
         "{units}",
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -121,10 +111,9 @@ def _windows(units: list[Chunk], window_size: int) -> list[list[Chunk]]:
     return [units[i:i + size] for i in range(0, len(units), size)]
 
 
-def _unit_payload(local_id: int, unit: Chunk, global_to_local: dict[int, int]) -> dict:
+def _unit_payload(local_id: int, unit: Chunk) -> dict:
     common = unit.metadata.get("common", {})
     table = unit.metadata.get("table", {})
-    refs = unit.metadata.get("references", {})
     return {
         "id": local_id,
         "global_index": unit.index,
@@ -134,16 +123,6 @@ def _unit_payload(local_id: int, unit: Chunk, global_to_local: dict[int, int]) -
         "summary": unit.summary,
         "keywords": unit.keywords,
         "table": table,
-        "references": {
-            "referenced_tables": refs.get("referenced_tables", []),
-            "linked_table_unit_ids": [
-                global_to_local[idx]
-                for idx in refs.get("linked_table_indices", [])
-                if isinstance(idx, int) and idx in global_to_local
-            ],
-            "linked_table_global_indices": refs.get("linked_table_indices", []),
-            "referenced_by_global_indices": refs.get("referenced_by_indices", []),
-        },
         "embedding_hint": _truncate(unit.embedding_text, 1800),
         "text_preview": _truncate(unit.text, 700),
     }
@@ -250,9 +229,6 @@ def _merged_metadata(units: list[Chunk]) -> dict:
     display_formats: list[str] = []
     unit_refs: list[dict] = []
     table_refs: list[dict] = []
-    referenced_tables: list[str] = []
-    linked_table_unit_indices: list[int] = []
-    referenced_by_unit_indices: list[int] = []
 
     for unit in units:
         common = unit.metadata.get("common", {})
@@ -265,17 +241,6 @@ def _merged_metadata(units: list[Chunk]) -> dict:
         fmt = common.get("display_format", "plain")
         if fmt not in display_formats:
             display_formats.append(fmt)
-
-        refs = unit.metadata.get("references", {})
-        for table_id in refs.get("referenced_tables", []):
-            if table_id not in referenced_tables:
-                referenced_tables.append(table_id)
-        for idx in refs.get("linked_table_indices", []):
-            if isinstance(idx, int) and idx not in linked_table_unit_indices:
-                linked_table_unit_indices.append(idx)
-        for idx in refs.get("referenced_by_indices", []):
-            if isinstance(idx, int) and idx not in referenced_by_unit_indices:
-                referenced_by_unit_indices.append(idx)
 
         table = unit.metadata.get("table", {})
         if table:
@@ -295,12 +260,6 @@ def _merged_metadata(units: list[Chunk]) -> dict:
             "section_path": section_path,
             "display_format": display_format,
         },
-        "references": {
-            "referenced_tables": referenced_tables,
-            "linked_table_unit_indices": linked_table_unit_indices,
-            "referenced_by_unit_indices": referenced_by_unit_indices,
-            "linked_table_indices": [],
-        },
         "units": unit_refs,
     }
     if len(table_refs) == 1:
@@ -308,35 +267,6 @@ def _merged_metadata(units: list[Chunk]) -> dict:
     elif table_refs:
         metadata["tables"] = table_refs
     return metadata
-
-
-def _link_final_chunk_references(
-    chunks: list[Chunk],
-    unit_to_chunk: dict[int, int],
-    unit_table_ids: dict[int, str],
-) -> None:
-    backrefs: dict[int, list[int]] = {}
-    for chunk in chunks:
-        refs = chunk.metadata.setdefault("references", {})
-        linked_chunks: list[int] = []
-        for unit_idx in refs.get("linked_table_unit_indices", []):
-            chunk_idx = unit_to_chunk.get(unit_idx)
-            if chunk_idx is None or chunk_idx == chunk.index:
-                continue
-            if chunk_idx not in linked_chunks:
-                linked_chunks.append(chunk_idx)
-                backrefs.setdefault(chunk_idx, []).append(chunk.index)
-        refs["linked_table_indices"] = linked_chunks
-        refs["referenced_table_chunks"] = _referenced_table_chunks(
-            refs.get("referenced_tables", []),
-            refs.get("linked_table_unit_indices", []),
-            unit_to_chunk,
-            unit_table_ids,
-        )
-
-    for chunk in chunks:
-        refs = chunk.metadata.setdefault("references", {})
-        refs["referenced_by_indices"] = sorted(set(backrefs.get(chunk.index, [])))
 
 
 def _dedupe_spans(units: list[Chunk]) -> list[tuple[int, int]]:
@@ -388,33 +318,6 @@ def _embedding_text(units: list[Chunk], title: str, summary: str, keywords: list
         parts.append("키워드: " + ", ".join(keywords))
     parts.extend(unit.embedding_text or unit.text for unit in units)
     return "\n".join(part for part in parts if part)
-
-
-def _referenced_table_chunks(
-    table_ids: list,
-    unit_indices: list,
-    unit_to_chunk: dict[int, int],
-    unit_table_ids: dict[int, str],
-) -> list[dict]:
-    refs: list[dict] = []
-    for table_id in table_ids:
-        if not isinstance(table_id, str):
-            continue
-        units = [
-            idx for idx in unit_indices
-            if isinstance(idx, int) and unit_table_ids.get(idx) == table_id
-        ]
-        chunk_indices: list[int] = []
-        for idx in units:
-            chunk_idx = unit_to_chunk.get(idx)
-            if chunk_idx is not None and chunk_idx not in chunk_indices:
-                chunk_indices.append(chunk_idx)
-        refs.append({
-            "table_id": table_id,
-            "unit_indices": units,
-            "chunk_indices": chunk_indices,
-        })
-    return refs
 
 
 def _enrich_missing_metadata(chunks: list[Chunk], cfg: LlmConfig | None, concurrency: int) -> None:

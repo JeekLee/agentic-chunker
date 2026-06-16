@@ -1,5 +1,5 @@
-from agentic_chunker._common import Block
-from agentic_chunker._propositions import extract
+from agentic_chunker._models import Block
+from agentic_chunker._legacy_propositions import extract
 
 
 def make_blocks():

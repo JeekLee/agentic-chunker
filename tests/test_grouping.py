@@ -1,10 +1,10 @@
-from agentic_chunker._common import Chunk
+from agentic_chunker._models import Chunk
 from agentic_chunker.llm import LlmConfig
-import agentic_chunker._unit_agent as unit_agent_mod
-from agentic_chunker._unit_agent import group_units
+import agentic_chunker._grouping as grouping_mod
+from agentic_chunker._grouping import group_units
 
 
-def U(index, text, kind="text", refs=None, linked=None):
+def U(index, text, kind="text"):
     return Chunk(
         index=index,
         text=text,
@@ -15,11 +15,6 @@ def U(index, text, kind="text", refs=None, linked=None):
         embedding_text=f"hint {index}",
         metadata={
             "common": {"chunk_kind": kind, "section_path": [], "display_format": "plain"},
-            "references": {
-                "referenced_tables": refs or [],
-                "linked_table_indices": linked or [],
-                "referenced_by_indices": [],
-            },
         },
     )
 
@@ -53,8 +48,8 @@ def test_group_units_preserves_source_text_and_uses_llm_metadata():
     ]
 
 
-def test_group_units_converts_linked_table_unit_indices_to_final_chunk_indices():
-    parent = U(0, "→ 표 1", refs=["표 1"], linked=[2])
+def test_group_units_does_not_emit_reference_metadata():
+    parent = U(0, "→ 표 1")
     middle = U(1, "다른 내용")
     table = U(2, "| 표 1 |", "table")
     table.metadata["table"] = {"table_id": "표 1"}
@@ -69,13 +64,8 @@ def test_group_units_converts_linked_table_unit_indices_to_final_chunk_indices()
 
     chunks = group_units(units, cfg=None, group=fake_group)
 
-    assert chunks[0].metadata["references"]["referenced_tables"] == ["표 1"]
-    assert chunks[0].metadata["references"]["linked_table_indices"] == [2]
-    assert chunks[0].metadata["references"]["referenced_table_chunks"] == [
-        {"table_id": "표 1", "unit_indices": [2], "chunk_indices": [2]}
-    ]
+    assert "references" not in chunks[0].metadata
     assert chunks[2].metadata["table"]["table_id"] == "표 1"
-    assert chunks[2].metadata["references"]["referenced_by_indices"] == [0]
 
 
 def test_group_units_preserves_multiple_table_metadata():
@@ -122,7 +112,7 @@ def test_group_units_enriches_fallback_metadata_when_cfg_is_available(monkeypatc
             "questions_answered": ["무엇을 설명하나?", "어떤 표인가?"],
         }
 
-    monkeypatch.setattr(unit_agent_mod, "_real_chat_json", fake_chat_json)
+    monkeypatch.setattr(grouping_mod, "_real_chat_json", fake_chat_json)
 
     chunks = group_units(
         units,
@@ -155,7 +145,7 @@ def test_group_units_retries_when_enrichment_returns_too_few_questions(monkeypat
     def fake_chat_json(prompt, cfg):
         return replies.pop(0)
 
-    monkeypatch.setattr(unit_agent_mod, "_real_chat_json", fake_chat_json)
+    monkeypatch.setattr(grouping_mod, "_real_chat_json", fake_chat_json)
 
     chunks = group_units(
         units,

@@ -1,57 +1,26 @@
-"""Optional domain knowledge extraction over chunks."""
+"""Optional domain extraction orchestration over chunks."""
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
 import json
 
-from ._common import Chunk, DocumentGraph
+from ._models import Chunk, DocumentGraph
+from ._domain_models import (
+    DocumentContext,
+    DomainExtractionResult,
+    DomainExtractor,
+    DomainSchema,
+    Entity,
+    Triple,
+)
 from .llm import LlmConfig, chat_json
-
-
-@dataclass
-class Entity:
-    name: str
-    type: str
-    canonical_name: str | None = None
-    metadata: dict = field(default_factory=dict)
-
-
-@dataclass
-class Triple:
-    subject: str
-    predicate: str
-    object: str
-    evidence: str
-    source_chunk_id: str
-    confidence: float | None = None
-    metadata: dict = field(default_factory=dict)
-
-
-@dataclass
-class DomainExtractionResult:
-    entities: list[Entity] = field(default_factory=list)
-    triples: list[Triple] = field(default_factory=list)
-
-
-@dataclass
-class DomainSchema:
-    entity_types: list[str]
-    relation_types: list[str]
-    instructions: str = ""
-
-
-@dataclass
-class DocumentContext:
-    chunks: list[Chunk]
-    document_graph: DocumentGraph
-
-
-class DomainExtractor(ABC):
-    @abstractmethod
-    def extract(self, chunk: Chunk, document_context: DocumentContext) -> DomainExtractionResult:
-        pass
+from ._structured import (
+    StructuredExtraction,
+    model_specs,
+    stable_json,
+    structured_from_json,
+    validate_structured_extractions,
+)
 
 
 def run_domain_extraction(
@@ -103,21 +72,27 @@ def _schema_prompt(chunk: Chunk, schema: DomainSchema) -> str:
         "summary": chunk.summary,
         "keywords": chunk.keywords,
         "questions_answered": chunk.questions_answered,
+        "document_graph": _compact_graph(chunk.document_graph),
         "entity_types": schema.entity_types,
         "relation_types": schema.relation_types,
+        "structured_models": model_specs(schema.structured_models),
         "instructions": schema.instructions,
     }
     return """\
 당신은 도메인 지식 그래프 추출기입니다.
 청크 원문에서 명시적으로 드러난 entity와 relation triple만 추출하세요.
-추론하지 말고, 모든 triple에는 원문 evidence를 포함하세요.
+추론하지 말고, 모든 triple과 structured extraction에는 원문 evidence를 포함하세요.
+structured_models가 비어 있지 않으면 해당 모델의 필드에 맞는 구조화 레코드도 추출하세요.
 
 다음 JSON 객체만 출력하세요:
 {
   "entities": [{"name": "...", "type": "...", "canonical_name": null, "metadata": {}}],
   "triples": [{"subject": "...", "predicate": "...", "object": "...",
                "evidence": "...", "source_chunk_id": "...",
-               "confidence": null, "metadata": {}}]
+               "confidence": null, "metadata": {}}],
+  "structured_extractions": [{"type": "ModelName", "data": {"field": "..."},
+                              "evidence": "...", "source_chunk_id": "...",
+                              "metadata": {}}]
 }
 
 입력:
@@ -163,7 +138,12 @@ def _result_from_json(raw: dict, chunk: Chunk) -> DomainExtractionResult:
             confidence=confidence if isinstance(confidence, int | float) else None,
             metadata=metadata,
         ))
-    return DomainExtractionResult(entities=entities, triples=triples)
+    structured_extractions = structured_from_json(raw, chunk.id)
+    return DomainExtractionResult(
+        entities=entities,
+        triples=triples,
+        structured_extractions=structured_extractions,
+    )
 
 
 def _validate_result(result: DomainExtractionResult, schema: DomainSchema | None, chunk: Chunk) -> DomainExtractionResult:
@@ -181,14 +161,26 @@ def _validate_result(result: DomainExtractionResult, schema: DomainSchema | None
         if not triple.source_chunk_id:
             triple.source_chunk_id = chunk.id
         triples.append(triple)
-    return DomainExtractionResult(entities=entities, triples=triples)
+
+    structured_extractions = validate_structured_extractions(
+        result.structured_extractions,
+        schema.structured_models if schema else [],
+        chunk.id,
+    )
+    return DomainExtractionResult(
+        entities=entities,
+        triples=triples,
+        structured_extractions=structured_extractions,
+    )
 
 
 def _merge_results(results: list[DomainExtractionResult]) -> DomainExtractionResult:
     entities: list[Entity] = []
     triples: list[Triple] = []
+    structured_extractions: list[StructuredExtraction] = []
     entity_keys: set[tuple[str, str, str | None]] = set()
     triple_keys: set[tuple[str, str, str, str, str]] = set()
+    structured_keys: set[tuple[str, str, str, str]] = set()
 
     for result in results:
         for entity in result.entities:
@@ -201,7 +193,21 @@ def _merge_results(results: list[DomainExtractionResult]) -> DomainExtractionRes
             if key not in triple_keys:
                 triple_keys.add(key)
                 triples.append(triple)
-    return DomainExtractionResult(entities=entities, triples=triples)
+        for extraction in result.structured_extractions:
+            key = (
+                extraction.type,
+                stable_json(extraction.data),
+                extraction.evidence,
+                extraction.source_chunk_id,
+            )
+            if key not in structured_keys:
+                structured_keys.add(key)
+                structured_extractions.append(extraction)
+    return DomainExtractionResult(
+        entities=entities,
+        triples=triples,
+        structured_extractions=structured_extractions,
+    )
 
 
 def _merge_document_graphs(chunks: list[Chunk]) -> DocumentGraph:
@@ -213,3 +219,42 @@ def _merge_document_graphs(chunks: list[Chunk]) -> DocumentGraph:
         for edge in chunk.document_graph.edges:
             edges.setdefault((edge.source_id, edge.target_id, edge.type), edge)
     return DocumentGraph(nodes=list(nodes.values()), edges=list(edges.values()))
+
+
+def _compact_graph(graph: DocumentGraph) -> dict:
+    return {
+        "nodes": [
+            {
+                "id": node.id,
+                "type": node.type,
+                "text": _truncate(node.text or "", 300),
+                "metadata": _compact_metadata(node.metadata),
+            }
+            for node in graph.nodes[:40]
+        ],
+        "edges": [
+            {
+                "source_id": edge.source_id,
+                "target_id": edge.target_id,
+                "type": edge.type,
+                "metadata": _compact_metadata(edge.metadata),
+            }
+            for edge in graph.edges[:80]
+        ],
+    }
+
+
+def _compact_metadata(metadata: dict) -> dict:
+    compact = {}
+    for key, value in metadata.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            compact[key] = value
+        elif isinstance(value, list):
+            compact[key] = value[:8]
+        elif isinstance(value, dict):
+            compact[key] = {k: v for k, v in list(value.items())[:8]}
+    return compact
+
+
+def _truncate(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit] + "..."

@@ -1,8 +1,8 @@
 """Build source-preserving evidence units before agentic grouping."""
 from __future__ import annotations
 
-from ._common import Block, Chunk
-from ._tables import link_table_references, split_structured_blocks
+from ._models import Block, Chunk
+from ._tables import split_structured_blocks
 
 
 def build_units(blocks: list[Block]) -> list[Chunk]:
@@ -13,9 +13,7 @@ def build_units(blocks: list[Block]) -> list[Chunk]:
     """
     text_blocks, structured = split_structured_blocks(blocks)
     text_units = [_text_unit(block) for block in text_blocks]
-    units = _order_units([*text_units, *structured])
-    link_table_references(units)
-    return units
+    return _order_units([*text_units, *structured])
 
 
 def _text_unit(block: Block) -> Chunk:
@@ -33,7 +31,6 @@ def _text_unit(block: Block) -> Chunk:
                 "section_path": [block.header] if block.header else [],
                 "display_format": "plain",
             },
-            "references": {"referenced_tables": [], "linked_table_indices": []},
         },
     )
 
@@ -50,7 +47,6 @@ def _order_units(units: list[Chunk]) -> list[Chunk]:
             "section_path": [],
             "display_format": "plain",
         })
-        unit.metadata.setdefault("references", {"referenced_tables": [], "linked_table_indices": []})
         if not unit.embedding_text:
             unit.embedding_text = "\n".join(p for p in (unit.title, unit.summary, unit.text) if p)
     return ordered
