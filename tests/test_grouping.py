@@ -96,7 +96,35 @@ def test_group_units_builds_embedding_text_from_context_when_llm_omits_it():
 
     assert chunks[0].embedding_text.startswith("제목: 제목\n요약: 요약\n키워드: 키워드\n")
     assert "hint 0" in chunks[0].embedding_text
-    assert chunks[0].questions_answered == ["제목에 대해 무엇을 알 수 있나요?"]
+    assert chunks[0].questions_answered == [
+        "제목에 대해 무엇을 알 수 있나요?",
+        "제목에서 확인해야 할 사항은 무엇인가요?",
+    ]
+
+
+def test_group_units_derives_fallback_keywords_from_source_text():
+    unit = U(0, "의료급여 과다본인부담금 공제 처리 절차를 설명한다.")
+    unit.keywords = []
+
+    def fake_group(window, cfg, max_units):
+        return None
+
+    chunks = group_units([unit], cfg=None, group=fake_group)
+
+    assert chunks[0].keywords[:3] == ["의료급여", "과다본인부담금", "공제"]
+    assert len(chunks[0].questions_answered) >= 2
+
+
+def test_group_units_normalizes_spaced_hangul_fallback_keywords():
+    unit = U(0, "진 료 내 역 (의 약 품)\n처 방 명")
+    unit.keywords = []
+
+    def fake_group(window, cfg, max_units):
+        return None
+
+    chunks = group_units([unit], cfg=None, group=fake_group)
+
+    assert chunks[0].keywords[:3] == ["진료내역", "의약품", "처방명"]
 
 
 def test_unit_payload_is_compact_for_table_units():
