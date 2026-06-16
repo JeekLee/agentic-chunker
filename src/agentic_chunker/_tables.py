@@ -202,6 +202,7 @@ def _general_table_chunks(
                     "row_count": len(rows),
                     "part_index": part_index if total > 1 else None,
                     "part_total": total if total > 1 else None,
+                    "source_span": _table_source_span(block, caption_block),
                 },
             },
         ))
@@ -238,7 +239,39 @@ def _table_embedding(
         pairs = [f"{headers[i]}={clean_cells[i]}" for i in range(len(headers)) if clean_cells[i]]
         if pairs:
             lines.append("; ".join(pairs) + ".")
+        qa = _qa_embedding(headers, clean_cells)
+        if qa:
+            lines.append(qa)
     return " ".join(lines)
+
+
+def _qa_embedding(headers: list[str], cells: list[str]) -> str:
+    header_keys = [_header_key(header) for header in headers]
+    question_index = _first_index(header_keys, {"질의", "질문"})
+    answer_index = _first_index(header_keys, {"답변", "답"})
+    if question_index is None or answer_index is None:
+        return ""
+
+    question = cells[question_index] if question_index < len(cells) else ""
+    answer = cells[answer_index] if answer_index < len(cells) else ""
+    if not question and not answer:
+        return ""
+
+    number_index = _first_index(header_keys, {"연번", "번호", "no"})
+    number = cells[number_index] if number_index is not None and number_index < len(cells) else ""
+    prefix = f"문답 {number}. " if number else "문답. "
+    return f"{prefix}질문: {question}. 답변: {answer}."
+
+
+def _header_key(header: str) -> str:
+    return re.sub(r"\s+", "", _clean_cell(header)).lower()
+
+
+def _first_index(values: list[str], candidates: set[str]) -> int | None:
+    for i, value in enumerate(values):
+        if value in candidates:
+            return i
+    return None
 
 
 def _table_summary(
@@ -286,3 +319,9 @@ def _spans(block: Block, caption_block: Block | None) -> list[tuple[int, int]]:
         spans.append((caption_block.char_start, caption_block.char_end))
     spans.append((block.char_start, block.char_end))
     return spans
+
+
+def _table_source_span(block: Block, caption_block: Block | None) -> tuple[int, int]:
+    if caption_block is None:
+        return (block.char_start, block.char_end)
+    return (caption_block.char_start, block.char_end)

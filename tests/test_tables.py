@@ -27,6 +27,7 @@ def test_qa_table_is_kept_as_a_markdown_table_chunk():
     assert chunks[0].metadata["common"]["display_format"] == "markdown_table"
     assert chunks[0].metadata["table"]["headers"] == ["연번", "질의", "답변"]
     assert "연번=2; 질의=Q2; 답변=A2 → 표 1." in chunks[0].embedding_text
+    assert "문답 2. 질문: Q2. 답변: A2 → 표 1." in chunks[0].embedding_text
 
 
 def test_qa_table_with_spaced_headers_is_kept_as_table():
@@ -41,6 +42,7 @@ def test_qa_table_with_spaced_headers_is_kept_as_table():
     assert chunks[0].metadata["common"]["chunk_kind"] == "table"
     assert chunks[0].metadata["table"]["headers"] == ["연번", "질 의", "답 변"]
     assert "연번=1; 질 의=Q1; 답 변=A1 → 표 12." in chunks[0].embedding_text
+    assert "문답 1. 질문: Q1. 답변: A1 → 표 12." in chunks[0].embedding_text
 
 
 def test_general_table_keeps_markdown_table_for_display():
@@ -67,6 +69,7 @@ def test_general_table_keeps_markdown_table_for_display():
     assert chunks[0].keywords == ["표 1", "코드", "부위"]
     assert chunks[0].metadata["common"]["chunk_kind"] == "table"
     assert chunks[0].metadata["table"]["table_id"] == "표 1"
+    assert isinstance(chunks[0].metadata["table"]["source_span"], tuple)
     assert "코드=A; 부위=뇌; 코드=H; 부위=남성생식기." in chunks[0].embedding_text
 
 

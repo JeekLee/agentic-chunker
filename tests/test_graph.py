@@ -47,3 +47,30 @@ def test_graph_can_be_disabled(monkeypatch):
 
     assert chunks[0].document_graph.nodes == []
     assert chunks[0].document_graph.edges == []
+
+
+def test_table_parts_are_connected_with_continues_edges(monkeypatch):
+    def fake_group_units(units, cfg, **kw):
+        return list(units)
+
+    monkeypatch.setattr("agentic_chunker._chunker._group_units", fake_group_units)
+
+    rows = "\n".join(f"| {i} | value {i} |" for i in range(13))
+    md = f"""**[표 1]**
+
+| 번호 | 값 |
+| --- | --- |
+{rows}
+"""
+    chunker = AgenticChunker(llm=CFG)
+    chunks = chunker.chunk(md)
+
+    assert len(chunks) == 2
+    full_edge_keys = {(edge.source_id, edge.target_id, edge.type) for edge in chunker.document_graph.edges}
+    local_edge_keys = {(edge.source_id, edge.target_id, edge.type) for edge in chunks[0].document_graph.edges}
+    local_nodes = {node.id for node in chunks[0].document_graph.nodes}
+
+    assert ("table:unit:0", "table:unit:1", "CONTINUES") in full_edge_keys
+    assert ("table:unit:0", "table:unit:1", "CONTINUES") in local_edge_keys
+    assert "chunk:1" in local_nodes
+    assert "table:unit:1" in local_nodes

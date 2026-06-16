@@ -129,9 +129,10 @@ expected search quality on real files:
 LLM_URL=http://localhost:10080/v1 \
 LLM_API_KEY=... \
 LLM_MODEL=qwen3-... \
-.venv/bin/python examples/evaluate_md.py /tmp/mdout/val_01_image_hwpx.md
+.venv/bin/python examples/evaluate_md.py /tmp/mdout/val_01_image_hwpx.md \
+  --gold-query "JS013 기재방법::JS013"
 
-.venv/bin/python examples/evaluate_md.py /tmp/mdout/val_01_image_hwpx.md --no-llm
+.venv/bin/python examples/evaluate_md.py /tmp/mdout/*.md --no-llm --aggregate-only
 ```
 
 ## How it works
