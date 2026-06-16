@@ -196,6 +196,97 @@ def test_group_units_splits_llm_windows_by_prompt_budget(monkeypatch):
     assert max(seen_window_sizes) < 8
 
 
+def test_group_units_retries_failed_llm_window_by_splitting():
+    units = [
+        U(0, "첫 번째 주제입니다. 충분한 길이의 설명입니다."),
+        U(1, "두 번째 주제입니다. 충분한 길이의 설명입니다."),
+        U(2, "세 번째 주제입니다. 충분한 길이의 설명입니다."),
+        U(3, "네 번째 주제입니다. 충분한 길이의 설명입니다."),
+    ]
+    seen_windows = []
+
+    def fake_group(window, cfg, max_units):
+        seen_windows.append(tuple(unit.index for unit in window))
+        if len(window) > 2:
+            return None
+        return [
+            {
+                "unit_indices": [i],
+                "title": f"LLM {unit.index}",
+                "summary": f"LLM summary {unit.index}",
+                "keywords": [f"kw{unit.index}"],
+                "questions_answered": ["무엇을 설명하나?", "어떤 내용인가?"],
+            }
+            for i, unit in enumerate(window)
+        ]
+
+    chunks = group_units(
+        units,
+        cfg=LlmConfig(url="http://x/v1", api_key="k", model="m"),
+        group=fake_group,
+        window_size=4,
+    )
+
+    assert seen_windows == [(0, 1, 2, 3), (0, 1), (2, 3)]
+    assert [chunk.title for chunk in chunks] == ["LLM 0", "LLM 1", "LLM 2", "LLM 3"]
+    assert all(chunk.metadata["_llm_metadata_generated"] is True for chunk in chunks)
+
+
+def test_group_units_retries_invalid_llm_window_by_splitting():
+    units = [
+        U(0, "첫 번째 주제입니다. 충분한 길이의 설명입니다."),
+        U(1, "두 번째 주제입니다. 충분한 길이의 설명입니다."),
+        U(2, "세 번째 주제입니다. 충분한 길이의 설명입니다."),
+        U(3, "네 번째 주제입니다. 충분한 길이의 설명입니다."),
+    ]
+    seen_windows = []
+
+    def fake_group(window, cfg, max_units):
+        seen_windows.append(tuple(unit.index for unit in window))
+        if len(window) > 2:
+            return [{"unit_indices": ["bad"], "title": "invalid"}]
+        return [
+            {
+                "unit_indices": [i],
+                "title": f"LLM {unit.index}",
+                "summary": f"LLM summary {unit.index}",
+                "keywords": [f"kw{unit.index}"],
+                "questions_answered": ["무엇을 설명하나?", "어떤 내용인가?"],
+            }
+            for i, unit in enumerate(window)
+        ]
+
+    chunks = group_units(
+        units,
+        cfg=LlmConfig(url="http://x/v1", api_key="k", model="m"),
+        group=fake_group,
+        window_size=4,
+    )
+
+    assert seen_windows == [(0, 1, 2, 3), (0, 1), (2, 3)]
+    assert [chunk.title for chunk in chunks] == ["LLM 0", "LLM 1", "LLM 2", "LLM 3"]
+
+
+def test_group_units_keeps_deterministic_fallback_when_group_fails():
+    units = [
+        U(0, "첫 번째 문장입니다."),
+        U(1, "두 번째 문장입니다."),
+        U(2, "세 번째 문장입니다."),
+        U(3, "네 번째 문장입니다."),
+    ]
+    seen_windows = []
+
+    def fake_group(window, cfg, max_units):
+        seen_windows.append(tuple(unit.index for unit in window))
+        return None
+
+    chunks = group_units(units, cfg=None, group=fake_group, window_size=4)
+
+    assert seen_windows == [(0, 1, 2, 3)]
+    assert len(chunks) == 1
+    assert chunks[0].source == "\n\n".join(unit.source for unit in units)
+
+
 def test_group_units_splits_large_source_clusters(monkeypatch):
     units = [U(0, "A" * 8), U(1, "B" * 8), U(2, "C" * 8)]
     monkeypatch.setattr(grouping_mod, "_MAX_CHUNK_SOURCE_CHARS", 10)
