@@ -12,6 +12,8 @@ from .llm import chat_json as _real_chat_json
 _MAX_CHUNK_SOURCE_CHARS = 6000
 _TABLE_PAYLOAD_CHARS = 700
 _TEXT_PAYLOAD_CHARS = 650
+_TINY_SOURCE_CHARS = 20
+_TEXTUAL_KINDS = {"text", "heading"}
 
 _PROMPT = """\
 당신은 RAG 인덱싱용 청크 편집자입니다.
@@ -157,7 +159,7 @@ def _group_window(
 ) -> list[dict]:
     clusters = group(window, cfg, max_units)
     if not isinstance(clusters, list):
-        return _own_chunks(window)
+        return _fallback_chunks(window, max_units)
 
     chunk_dicts: list[dict] = []
     assigned: set[int] = set()
@@ -201,23 +203,79 @@ def _group_window(
             })
 
     leftover = [window[i] for i in range(len(window)) if i not in assigned]
-    chunk_dicts.extend(_own_chunks(leftover))
-    return chunk_dicts or _own_chunks(window)
+    chunk_dicts.extend(_fallback_chunks(leftover, max_units))
+    return chunk_dicts or _fallback_chunks(window, max_units)
 
 
-def _own_chunks(units: list[Chunk]) -> list[dict]:
-    return [
-        {
-            "units": [unit],
-            "title": unit.title,
-            "summary": unit.summary,
-            "keywords": list(unit.keywords),
-            "questions_answered": list(unit.questions_answered),
-            "embedding_text": unit.embedding_text,
-            "llm_metadata": False,
-        }
-        for unit in units
-    ]
+def _fallback_chunks(units: list[Chunk], max_units: int) -> list[dict]:
+    groups: list[list[Chunk]] = []
+    current: list[Chunk] = []
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            groups.append(current)
+            current = []
+
+    for unit in units:
+        if not _is_textual_unit(unit):
+            flush()
+            groups.append([unit])
+            continue
+
+        if not current:
+            current = [unit]
+            continue
+
+        if _can_merge_fallback(current, unit, max_units):
+            current.append(unit)
+        else:
+            flush()
+            current = [unit]
+
+    flush()
+    return [_own_chunk(group) for group in groups]
+
+
+def _can_merge_fallback(current: list[Chunk], unit: Chunk, max_units: int) -> bool:
+    if len(current) >= max(1, max_units):
+        return False
+    if not all(_is_textual_unit(item) for item in current):
+        return False
+    if not _same_section(current[-1], unit):
+        return False
+    if sum(len(item.source) for item in current) + len(unit.source) > _MAX_CHUNK_SOURCE_CHARS:
+        return False
+    return any(_is_tiny_unit(item) for item in current) or _is_tiny_unit(unit)
+
+
+def _same_section(left: Chunk, right: Chunk) -> bool:
+    left_path = left.metadata.get("common", {}).get("section_path", [])
+    right_path = right.metadata.get("common", {}).get("section_path", [])
+    return left_path == right_path
+
+
+def _is_textual_unit(unit: Chunk) -> bool:
+    return unit.metadata.get("common", {}).get("chunk_kind", "text") in _TEXTUAL_KINDS
+
+
+def _is_tiny_unit(unit: Chunk) -> bool:
+    return len(unit.source.strip()) < _TINY_SOURCE_CHARS
+
+
+def _own_chunk(units: list[Chunk]) -> dict:
+    summary = _fallback_summary(units)
+    keywords = _fallback_keywords(units)
+    title = units[0].title
+    return {
+        "units": units,
+        "title": title,
+        "summary": summary,
+        "keywords": keywords,
+        "questions_answered": _fallback_questions(units, title),
+        "embedding_text": _embedding_text(units, title, summary, keywords),
+        "llm_metadata": False,
+    }
 
 
 def _split_members(

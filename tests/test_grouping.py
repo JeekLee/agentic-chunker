@@ -174,6 +174,37 @@ def test_group_units_enriches_fallback_metadata_when_cfg_is_available(monkeypatc
     assert chunks[0].metadata["_llm_metadata_generated"] is True
 
 
+def test_group_units_merges_tiny_text_fallback_units_with_neighbor():
+    units = [
+        U(0, "1."),
+        U(1, "본인부담금 공제 처리 절차를 설명한다."),
+    ]
+
+    def fake_group(window, cfg, max_units):
+        return None
+
+    chunks = group_units(units, cfg=None, group=fake_group)
+
+    assert len(chunks) == 1
+    assert chunks[0].source == "1.\n\n본인부담금 공제 처리 절차를 설명한다."
+    assert chunks[0].metadata["units"] == [
+        {"unit_index": 0, "kind": "text", "table_id": ""},
+        {"unit_index": 1, "kind": "text", "table_id": ""},
+    ]
+
+
+def test_group_units_keeps_tiny_table_fallback_units_separate():
+    text = U(0, "표")
+    table = U(1, "| A |\n| --- |", "table")
+
+    def fake_group(window, cfg, max_units):
+        return None
+
+    chunks = group_units([text, table], cfg=None, group=fake_group)
+
+    assert [chunk.source for chunk in chunks] == ["표", "| A |\n| --- |"]
+
+
 def test_group_units_retries_when_enrichment_returns_too_few_questions(monkeypatch):
     units = [U(0, "짧은 원문", kind="text")]
     replies = [

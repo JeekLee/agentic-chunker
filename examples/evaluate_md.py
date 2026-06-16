@@ -195,6 +195,13 @@ def _aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
             "chunks": sum(report["chunking_quality"]["chunks"] for report in reports),
             "tiny_chunks": sum(report["chunking_quality"]["tiny_chunks"] for report in reports),
             "oversized_chunks": sum(report["chunking_quality"]["oversized_chunks"] for report in reports),
+            "files_with_tiny_chunks": sum(
+                1 for report in reports if report["chunking_quality"]["tiny_chunks"]
+            ),
+            "tiny_chunks_by_kind": _sum_counters(
+                report["chunking_quality"]["tiny_chunk_details"]["by_kind"] for report in reports
+            ),
+            "tiny_chunk_examples": _aggregate_tiny_examples(reports),
             "unit_coverage_ok": all(
                 not report["chunking_quality"]["unit_coverage"]["missing"]
                 and not report["chunking_quality"]["unit_coverage"]["duplicates"]
@@ -232,6 +239,7 @@ def _aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
                 report["search_quality_expected"]["lexical_gold_queries"]["count"] for report in reports
             ),
             "gold_hit_at_5": _aggregate_gold_hit(reports),
+            "expanded_gold_hit_at_5": _aggregate_expanded_gold_hit(reports),
         },
     }
 
@@ -255,6 +263,26 @@ def _aggregate_gold_hit(reports: list[dict[str, Any]]) -> float | None:
         if report["search_quality_expected"]["lexical_gold_queries"]["hit_at_5"] is not None
     ]
     return _average(values) if values else None
+
+
+def _aggregate_expanded_gold_hit(reports: list[dict[str, Any]]) -> float | None:
+    values = [
+        report["search_quality_expected"]["lexical_gold_queries"]["expanded_hit_at_5"]
+        for report in reports
+        if report["search_quality_expected"]["lexical_gold_queries"]["expanded_hit_at_5"] is not None
+    ]
+    return _average(values) if values else None
+
+
+def _aggregate_tiny_examples(reports: list[dict[str, Any]], limit: int = 10) -> list[dict[str, Any]]:
+    examples: list[dict[str, Any]] = []
+    for report in reports:
+        path = report["input"]["path"]
+        for example in report["chunking_quality"]["tiny_chunk_details"]["examples"]:
+            examples.append({"path": path, **example})
+            if len(examples) >= limit:
+                return examples
+    return examples
 
 
 def _report(
@@ -321,6 +349,7 @@ def _report(
             "source_chars": _distribution(chunk_lengths),
             "units_per_chunk": _distribution(units_per_chunk),
             "tiny_chunks": sum(1 for chunk in chunks if len(chunk.source.strip()) < 20),
+            "tiny_chunk_details": _tiny_chunk_details(chunks),
             "oversized_chunks": sum(1 for chunk in chunks if len(chunk.source) > args.max_good_source_chars),
         },
         "graph_quality": {
@@ -378,6 +407,26 @@ def _ratio(numerator: int, denominator: int) -> float:
 
 def _unit_kind(unit: Any) -> str:
     return unit.metadata.get("common", {}).get("chunk_kind", "?")
+
+
+def _tiny_chunk_details(chunks: list, limit: int = 10) -> dict[str, Any]:
+    tiny = [chunk for chunk in chunks if len(chunk.source.strip()) < 20]
+    by_kind = Counter(_chunk_kind(chunk) for chunk in tiny)
+    examples = [
+        {
+            "index": chunk.index,
+            "kind": _chunk_kind(chunk),
+            "chars": len(chunk.source.strip()),
+            "title": chunk.title,
+            "preview": " ".join(chunk.source.split())[:160],
+        }
+        for chunk in tiny[:limit]
+    ]
+    return {"by_kind": dict(by_kind), "examples": examples}
+
+
+def _chunk_kind(chunk: Any) -> str:
+    return chunk.metadata.get("common", {}).get("chunk_kind", "?")
 
 
 def _load_gold_query_manifest(path: Path | None) -> dict[str, Any] | None:
@@ -447,19 +496,24 @@ def _unique(values: list[str]) -> list[str]:
 def _lexical_gold_report(chunks: list, specs: list[str], top_k: int = 5) -> dict[str, Any]:
     queries = [_parse_gold_query(spec) for spec in specs]
     if not queries:
-        return {"count": 0, "hit_at_5": None, "queries": []}
+        return {"count": 0, "hit_at_5": None, "expanded_hit_at_5": None, "queries": []}
 
     results = []
     hits = 0
+    expanded_hits = 0
     for query, expected in queries:
         ranked = _rank_chunks(query, chunks)[:top_k]
         hit = bool(expected) and any(_contains_expected(chunk, expected) for _, chunk in ranked)
+        expanded_hit = bool(expected) and any(_contains_expected_expanded(chunk, expected) for _, chunk in ranked)
         if hit:
             hits += 1
+        if expanded_hit:
+            expanded_hits += 1
         results.append({
             "query": query,
             "expected": expected,
             "hit_at_5": hit if expected else None,
+            "expanded_hit_at_5": expanded_hit if expected else None,
             "top_chunks": [
                 {
                     "index": chunk.index,
@@ -474,6 +528,7 @@ def _lexical_gold_report(chunks: list, specs: list[str], top_k: int = 5) -> dict
     return {
         "count": len(queries),
         "hit_at_5": _ratio(hits, expected_count) if expected_count else None,
+        "expanded_hit_at_5": _ratio(expanded_hits, expected_count) if expected_count else None,
         "queries": results,
     }
 
@@ -523,6 +578,22 @@ def _terms(text: str) -> list[str]:
 def _contains_expected(chunk: Any, expected: str) -> bool:
     needle = expected.lower()
     return needle in _search_text(chunk).lower()
+
+
+def _contains_expected_expanded(chunk: Any, expected: str) -> bool:
+    needle = expected.lower()
+    return needle in _expanded_search_text(chunk).lower()
+
+
+def _expanded_search_text(chunk: Any) -> str:
+    parts = [_search_text(chunk)]
+    graph = getattr(chunk, "document_graph", None)
+    for node in getattr(graph, "nodes", []):
+        if node.text:
+            parts.append(str(node.text))
+        if isinstance(node.metadata, dict):
+            parts.extend(str(value) for value in node.metadata.values() if isinstance(value, str))
+    return "\n".join(part for part in parts if part)
 
 
 def _chunk_table_ids(chunk: Any) -> list[str]:
