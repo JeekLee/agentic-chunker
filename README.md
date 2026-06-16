@@ -146,6 +146,8 @@ kind, including failure counts, timing, and prompt sizes.
 To compare a new run against a previous report, pass `--compare-report`. The
 output includes a `comparison` section grouped by speed, chunking quality, graph
 quality, and expected search quality, plus concrete improvement candidates.
+Small `wall_sec` jitter is tolerated so sub-50ms or sub-5% timing noise does
+not dominate the candidate list.
 
 ```bash
 .venv/bin/python examples/evaluate_md.py /tmp/mdout/*.md \

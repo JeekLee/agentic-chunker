@@ -240,6 +240,19 @@ def test_compare_reports_groups_metric_statuses_and_candidates() -> None:
     }
 
 
+def test_compare_reports_ignores_small_speed_jitter() -> None:
+    evaluator = _load_evaluator()
+    baseline = evaluator._aggregate_reports([_report(10, 0.333, 1.0, True)])
+    current = json.loads(json.dumps(baseline))
+    current["speed"]["wall_sec"] = 0.342
+
+    comparison = evaluator._compare_reports(baseline, current)
+
+    assert comparison["areas"]["speed"]["wall_sec"]["status"] == "unchanged"
+    assert comparison["summary"]["regressed"] == 0
+    assert comparison["improvement_candidates"] == []
+
+
 def test_benchmark_subject_prefers_aggregate_payload() -> None:
     evaluator = _load_evaluator()
     aggregate = {"files": 2, "speed": {"wall_sec": 1.0}}

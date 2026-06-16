@@ -458,28 +458,28 @@ def _aggregate_tiny_examples(reports: list[dict[str, Any]], limit: int = 10) -> 
     return examples
 
 
-_COMPARISON_METRICS: dict[str, tuple[tuple[str, str], ...]] = {
+_COMPARISON_METRICS: dict[str, tuple[dict[str, Any], ...]] = {
     "speed": (
-        ("wall_sec", "lower"),
-        ("llm_failed", "lower"),
+        {"name": "wall_sec", "direction": "lower", "tolerance_abs": 0.05, "tolerance_pct": 5.0},
+        {"name": "llm_failed", "direction": "lower"},
     ),
     "chunking_quality": (
-        ("tiny_chunks", "lower"),
-        ("oversized_chunks", "lower"),
-        ("files_with_tiny_chunks", "lower"),
-        ("unit_coverage_ok", "truthy"),
+        {"name": "tiny_chunks", "direction": "lower"},
+        {"name": "oversized_chunks", "direction": "lower"},
+        {"name": "files_with_tiny_chunks", "direction": "lower"},
+        {"name": "unit_coverage_ok", "direction": "truthy"},
     ),
     "graph_quality": (
-        ("avg_table_reference_coverage", "higher"),
-        ("files_with_missing_table_refs", "lower"),
+        {"name": "avg_table_reference_coverage", "direction": "higher"},
+        {"name": "files_with_missing_table_refs", "direction": "lower"},
     ),
     "search_quality_expected": (
-        ("avg_metadata_complete_ratio", "higher"),
-        ("chunks_missing_keywords", "lower"),
-        ("chunks_with_questions_lt_2", "lower"),
-        ("avg_table_context_coverage", "higher"),
-        ("gold_hit_at_5", "higher"),
-        ("expanded_gold_hit_at_5", "higher"),
+        {"name": "avg_metadata_complete_ratio", "direction": "higher"},
+        {"name": "chunks_missing_keywords", "direction": "lower"},
+        {"name": "chunks_with_questions_lt_2", "direction": "lower"},
+        {"name": "avg_table_context_coverage", "direction": "higher"},
+        {"name": "gold_hit_at_5", "direction": "higher"},
+        {"name": "expanded_gold_hit_at_5", "direction": "higher"},
     ),
 }
 
@@ -515,11 +515,15 @@ def _compare_reports(baseline_payload: dict[str, Any], current_payload: dict[str
 
     for area, metrics in _COMPARISON_METRICS.items():
         area_report = {}
-        for metric, direction in metrics:
+        for spec in metrics:
+            metric = spec["name"]
+            direction = spec["direction"]
             comparison = _compare_metric(
                 baseline.get(area, {}).get(metric),
                 current.get(area, {}).get(metric),
                 direction,
+                tolerance_abs=spec.get("tolerance_abs", 0.0),
+                tolerance_pct=spec.get("tolerance_pct", 0.0),
             )
             area_report[metric] = comparison
             summary[comparison["status"]] += 1
@@ -542,7 +546,14 @@ def _compare_reports(baseline_payload: dict[str, Any], current_payload: dict[str
     }
 
 
-def _compare_metric(baseline: Any, current: Any, direction: str) -> dict[str, Any]:
+def _compare_metric(
+    baseline: Any,
+    current: Any,
+    direction: str,
+    *,
+    tolerance_abs: float = 0.0,
+    tolerance_pct: float = 0.0,
+) -> dict[str, Any]:
     if baseline is None or current is None:
         return {
             "baseline": baseline,
@@ -564,6 +575,11 @@ def _compare_metric(baseline: Any, current: Any, direction: str) -> dict[str, An
         "status": "unchanged",
         "reason": "value is unchanged",
     }
+    if current == baseline:
+        return result
+    if _within_tolerance(baseline, current, tolerance_abs, tolerance_pct):
+        result["reason"] = "change is within comparison tolerance"
+        return result
 
     if direction == "lower":
         if current < baseline:
@@ -606,6 +622,16 @@ def _percent_delta(baseline: Any, current: Any) -> float | None:
     if not isinstance(baseline, (int, float)) or not isinstance(current, (int, float)) or baseline == 0:
         return None
     return round(((current - baseline) / abs(baseline)) * 100, 2)
+
+
+def _within_tolerance(baseline: Any, current: Any, tolerance_abs: float, tolerance_pct: float) -> bool:
+    delta = _numeric_delta(baseline, current)
+    if delta is None:
+        return False
+    if tolerance_abs and abs(delta) <= tolerance_abs:
+        return True
+    pct_delta = _percent_delta(baseline, current)
+    return bool(tolerance_pct and pct_delta is not None and abs(pct_delta) <= tolerance_pct)
 
 
 def _report(
