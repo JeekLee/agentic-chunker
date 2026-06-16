@@ -110,12 +110,16 @@ def group_units(
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
         per_window = list(ex.map(run, windows))
 
-    chunks: list[Chunk] = []
+    chunk_dicts: list[dict] = []
     for window_chunks in per_window:
         for cd in window_chunks:
-            members = cd["units"]
-            chunk = _final_chunk(len(chunks), members, cd)
-            chunks.append(chunk)
+            chunk_dicts.append(cd)
+    chunk_dicts = _merge_tiny_chunk_dicts(chunk_dicts, max_units)
+
+    chunks: list[Chunk] = []
+    for cd in chunk_dicts:
+        chunk = _final_chunk(len(chunks), cd["units"], cd)
+        chunks.append(chunk)
     _enrich_missing_metadata(chunks, cfg, concurrency)
     return chunks
 
@@ -252,7 +256,96 @@ def _fallback_chunks(units: list[Chunk], max_units: int) -> list[dict]:
             current = [unit]
 
     flush()
+    groups = _merge_tiny_fallback_groups(groups, max_units)
     return [_own_chunk(group) for group in groups]
+
+
+def _merge_tiny_fallback_groups(groups: list[list[Chunk]], max_units: int) -> list[list[Chunk]]:
+    merged: list[list[Chunk]] = []
+    i = 0
+    while i < len(groups):
+        group = groups[i]
+        if not _is_tiny_group(group):
+            merged.append(group)
+            i += 1
+            continue
+
+        if i + 1 < len(groups) and _can_merge_groups(group, groups[i + 1], max_units):
+            groups[i + 1] = [*group, *groups[i + 1]]
+            i += 1
+            continue
+
+        if merged and _can_merge_groups(merged[-1], group, max_units):
+            merged[-1] = [*merged[-1], *group]
+        else:
+            merged.append(group)
+        i += 1
+    return merged
+
+
+def _merge_tiny_chunk_dicts(items: list[dict], max_units: int) -> list[dict]:
+    merged: list[dict] = []
+    i = 0
+    while i < len(items):
+        item = items[i]
+        units = item["units"]
+        if not _is_tiny_group(units):
+            merged.append(item)
+            i += 1
+            continue
+
+        if i + 1 < len(items) and _can_merge_chunk_dicts(item, items[i + 1], max_units):
+            items[i + 1] = _merge_chunk_dicts(item, items[i + 1])
+            i += 1
+            continue
+
+        if merged and _can_merge_chunk_dicts(merged[-1], item, max_units):
+            merged[-1] = _merge_chunk_dicts(merged[-1], item)
+        else:
+            merged.append(item)
+        i += 1
+    return merged
+
+
+def _can_merge_chunk_dicts(left: dict, right: dict, max_units: int) -> bool:
+    if left.get("llm_metadata") or right.get("llm_metadata"):
+        return False
+    return _can_merge_groups(left["units"], right["units"], max_units)
+
+
+def _merge_chunk_dicts(left: dict, right: dict) -> dict:
+    return _own_chunk([*left["units"], *right["units"]])
+
+
+def _is_tiny_group(group: list[Chunk]) -> bool:
+    return len(_group_source(group).strip()) < _TINY_SOURCE_CHARS
+
+
+def _can_merge_groups(left: list[Chunk], right: list[Chunk], max_units: int) -> bool:
+    if len(left) + len(right) > max(1, max_units):
+        return False
+    if len(_group_source([*left, *right])) > _MAX_CHUNK_SOURCE_CHARS:
+        return False
+    return _compatible_sections(left, right)
+
+
+def _group_source(group: list[Chunk]) -> str:
+    return "\n\n".join(unit.source for unit in group if unit.source)
+
+
+def _compatible_sections(left: list[Chunk], right: list[Chunk]) -> bool:
+    left_sections = _group_section_keys(left)
+    right_sections = _group_section_keys(right)
+    return not left_sections or not right_sections or bool(left_sections & right_sections)
+
+
+def _group_section_keys(group: list[Chunk]) -> set[tuple[str, ...]]:
+    keys: set[tuple[str, ...]] = set()
+    for unit in group:
+        section_path = unit.metadata.get("common", {}).get("section_path", [])
+        if section_path:
+            keys.add(tuple(str(section) for section in section_path))
+    return keys
 
 
 def _can_merge_fallback(current: list[Chunk], unit: Chunk, max_units: int) -> bool:

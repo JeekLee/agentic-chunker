@@ -221,7 +221,7 @@ def test_group_units_merges_tiny_text_fallback_units_with_neighbor():
     ]
 
 
-def test_group_units_keeps_tiny_table_fallback_units_separate():
+def test_group_units_merges_tiny_text_fallback_units_with_table_neighbor():
     text = U(0, "표")
     table = U(1, "| A |\n| --- |", "table")
 
@@ -230,7 +230,58 @@ def test_group_units_keeps_tiny_table_fallback_units_separate():
 
     chunks = group_units([text, table], cfg=None, group=fake_group)
 
-    assert [chunk.source for chunk in chunks] == ["표", "| A |\n| --- |"]
+    assert len(chunks) == 1
+    assert chunks[0].source == "표\n\n| A |\n| --- |"
+    assert chunks[0].metadata["common"]["chunk_kind"] == "mixed"
+    assert chunks[0].metadata["units"] == [
+        {"unit_index": 0, "kind": "text", "table_id": ""},
+        {"unit_index": 1, "kind": "table", "table_id": ""},
+    ]
+
+
+def test_group_units_merges_trailing_tiny_fallback_group_with_previous_neighbor():
+    units = [
+        U(0, "긴 본문입니다. 이 내용은 단독 청크로 둘 만큼 충분히 깁니다."),
+        U(1, "서명"),
+    ]
+
+    def fake_group(window, cfg, max_units):
+        return None
+
+    chunks = group_units(units, cfg=None, group=fake_group)
+
+    assert len(chunks) == 1
+    assert chunks[0].source.endswith("\n\n서명")
+
+
+def test_group_units_merges_tiny_table_caption_fallback_group_with_following_text():
+    caption = U(0, "**[표 3]**", "table_caption")
+    caption.title = "표 3"
+    caption.metadata["table"] = {"table_id": "표 3"}
+    text = U(1, "표 3에 대한 주석 본문입니다.")
+
+    def fake_group(window, cfg, max_units):
+        return None
+
+    chunks = group_units([caption, text], cfg=None, group=fake_group)
+
+    assert len(chunks) == 1
+    assert chunks[0].source == "**[표 3]**\n\n표 3에 대한 주석 본문입니다."
+    assert chunks[0].metadata["common"]["chunk_kind"] == "mixed"
+    assert chunks[0].metadata["table"]["table_id"] == "표 3"
+
+
+def test_group_units_merges_tiny_fallback_groups_across_windows():
+    text = U(0, "표")
+    table = U(1, "| A |\n| --- |", "table")
+
+    def fake_group(window, cfg, max_units):
+        return None
+
+    chunks = group_units([text, table], cfg=None, group=fake_group, window_size=1)
+
+    assert len(chunks) == 1
+    assert chunks[0].source == "표\n\n| A |\n| --- |"
 
 
 def test_group_units_retries_when_enrichment_returns_too_few_questions(monkeypatch):
