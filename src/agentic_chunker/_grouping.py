@@ -308,13 +308,51 @@ def _merge_tiny_chunk_dicts(items: list[dict], max_units: int) -> list[dict]:
 
 
 def _can_merge_chunk_dicts(left: dict, right: dict, max_units: int) -> bool:
-    if left.get("llm_metadata") or right.get("llm_metadata"):
+    if not (_is_tiny_group(left["units"]) or _is_tiny_group(right["units"])):
         return False
     return _can_merge_groups(left["units"], right["units"], max_units)
 
 
 def _merge_chunk_dicts(left: dict, right: dict) -> dict:
-    return _own_chunk([*left["units"], *right["units"]])
+    units = [*left["units"], *right["units"]]
+    if not left.get("llm_metadata") and not right.get("llm_metadata"):
+        return _own_chunk(units)
+
+    fallback = _own_chunk(units)
+    primary = right if _is_tiny_group(left["units"]) else left
+    keywords = _merge_list_fields([left.get("keywords", []), right.get("keywords", [])], 20) or fallback["keywords"]
+    questions = _merge_list_fields(
+        [left.get("questions_answered", []), right.get("questions_answered", [])],
+        3,
+    ) or fallback["questions_answered"]
+    return {
+        "units": units,
+        "title": primary.get("title") or fallback["title"],
+        "summary": _merge_text_fields([left.get("summary", ""), right.get("summary", "")], fallback["summary"]),
+        "keywords": keywords,
+        "questions_answered": questions,
+        "embedding_text": "",
+        "llm_metadata": bool(left.get("llm_metadata") or right.get("llm_metadata")),
+    }
+
+
+def _merge_text_fields(values: list[str], fallback: str) -> str:
+    parts: list[str] = []
+    for value in values:
+        if value and value not in parts:
+            parts.append(value)
+    return " / ".join(parts)[:500] or fallback
+
+
+def _merge_list_fields(values: list[list[str]], limit: int) -> list[str]:
+    merged: list[str] = []
+    for items in values:
+        for item in items:
+            if item and item not in merged:
+                merged.append(item)
+            if len(merged) >= limit:
+                return merged
+    return merged
 
 
 def _is_tiny_group(group: list[Chunk]) -> bool:
@@ -322,11 +360,20 @@ def _is_tiny_group(group: list[Chunk]) -> bool:
 
 
 def _can_merge_groups(left: list[Chunk], right: list[Chunk], max_units: int) -> bool:
-    if len(left) + len(right) > max(1, max_units):
+    if len(left) + len(right) > _merge_unit_limit(left, right, max_units):
         return False
     if len(_group_source([*left, *right])) > _MAX_CHUNK_SOURCE_CHARS:
         return False
     return _compatible_sections(left, right)
+
+
+def _merge_unit_limit(left: list[Chunk], right: list[Chunk], max_units: int) -> int:
+    limit = max(1, max_units)
+    if _is_tiny_group(left):
+        return limit + len(left)
+    if _is_tiny_group(right):
+        return limit + len(right)
+    return limit
 
 
 def _group_source(group: list[Chunk]) -> str:

@@ -65,7 +65,8 @@ def test_group_units_does_not_emit_reference_metadata():
     chunks = group_units(units, cfg=None, group=fake_group)
 
     assert "references" not in chunks[0].metadata
-    assert chunks[2].metadata["table"]["table_id"] == "표 1"
+    table_chunks = [chunk for chunk in chunks if chunk.metadata.get("table", {}).get("table_id") == "표 1"]
+    assert table_chunks
 
 
 def test_group_units_preserves_multiple_table_metadata():
@@ -282,6 +283,87 @@ def test_group_units_merges_tiny_fallback_groups_across_windows():
 
     assert len(chunks) == 1
     assert chunks[0].source == "표\n\n| A |\n| --- |"
+
+
+def test_group_units_merges_tiny_llm_group_with_following_neighbor():
+    units = [
+        U(0, "통보"),
+        U(1, "보장기관에 처리 결과를 통보한다."),
+    ]
+
+    def fake_group(window, cfg, max_units):
+        return [
+            {
+                "unit_indices": [0],
+                "title": "통보",
+                "summary": "통보 라벨",
+                "keywords": ["통보"],
+                "questions_answered": ["무엇을 통보하나?", "누구에게 통보하나?"],
+            },
+            {
+                "unit_indices": [1],
+                "title": "처리 결과 통보",
+                "summary": "보장기관에 처리 결과를 통보한다.",
+                "keywords": ["보장기관", "처리 결과"],
+                "questions_answered": ["처리 결과는 어디에 통보되나?", "통보 대상은 누구인가?"],
+            },
+        ]
+
+    chunks = group_units(units, cfg=None, group=fake_group)
+
+    assert len(chunks) == 1
+    assert chunks[0].source == "통보\n\n보장기관에 처리 결과를 통보한다."
+    assert chunks[0].title == "처리 결과 통보"
+    assert chunks[0].summary == "통보 라벨 / 보장기관에 처리 결과를 통보한다."
+    assert chunks[0].keywords == ["통보", "보장기관", "처리 결과"]
+    assert chunks[0].questions_answered == [
+        "무엇을 통보하나?",
+        "누구에게 통보하나?",
+        "처리 결과는 어디에 통보되나?",
+    ]
+    assert chunks[0].metadata["_llm_metadata_generated"] is True
+
+
+def test_group_units_keeps_non_tiny_llm_groups_separate():
+    units = [
+        U(0, "첫 번째 독립 주제입니다. 충분한 길이의 설명입니다."),
+        U(1, "두 번째 독립 주제입니다. 충분한 길이의 설명입니다."),
+    ]
+
+    def fake_group(window, cfg, max_units):
+        return [
+            {"unit_indices": [0], "title": "첫 번째", "summary": "", "keywords": []},
+            {"unit_indices": [1], "title": "두 번째", "summary": "", "keywords": []},
+        ]
+
+    chunks = group_units(units, cfg=None, group=fake_group)
+
+    assert [chunk.source for chunk in chunks] == [unit.source for unit in units]
+
+
+def test_group_units_allows_small_unit_overflow_when_merging_tiny_llm_group():
+    units = [
+        U(0, "통보"),
+        U(1, "보장기관"),
+        U(2, "처리 결과 통보의 자세한 설명입니다."),
+        U(3, "추가 확인 사항을 설명합니다."),
+    ]
+
+    def fake_group(window, cfg, max_units):
+        return [
+            {"unit_indices": [0, 1], "title": "통보", "summary": "", "keywords": ["통보"]},
+            {"unit_indices": [2, 3], "title": "처리", "summary": "", "keywords": ["처리"]},
+        ]
+
+    chunks = group_units(units, cfg=None, group=fake_group, max_units=2)
+
+    assert len(chunks) == 1
+    assert chunks[0].metadata["units"] == [
+        {"unit_index": 0, "kind": "text", "table_id": ""},
+        {"unit_index": 1, "kind": "text", "table_id": ""},
+        {"unit_index": 2, "kind": "text", "table_id": ""},
+        {"unit_index": 3, "kind": "text", "table_id": ""},
+    ]
 
 
 def test_group_units_retries_when_enrichment_returns_too_few_questions(monkeypatch):
