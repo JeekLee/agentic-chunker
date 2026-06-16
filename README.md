@@ -140,8 +140,11 @@ LLM_MODEL=qwen3-... \
 
 The aggregate report includes tiny chunk breakdowns by kind, representative
 examples, direct lexical `gold_hit_at_5`, and graph-expanded
-`expanded_gold_hit_at_5`. Aggregate speed output also summarizes LLM calls by
-kind, including failure counts, timing, and prompt sizes.
+`expanded_gold_hit_at_5`. Its `config` section also records runtime knobs such
+as `max_units`, `window_size`, `max_concurrency`, and
+`max_good_source_chars` so benchmark comparisons show both metric changes and
+the settings that produced them. Aggregate speed output also summarizes LLM
+calls by kind, including failure counts, timing, and prompt sizes.
 
 To compare a new run against a previous report, pass `--compare-report`. The
 output includes a `comparison` section grouped by speed, chunking quality, graph

@@ -317,6 +317,12 @@ def _aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
             "models": _unique_sorted(
                 report["config"].get("model") for report in reports if report["config"].get("model")
             ),
+            "max_units": _unique_values(report["config"].get("max_units") for report in reports),
+            "window_size": _unique_values(report["config"].get("window_size") for report in reports),
+            "max_concurrency": _unique_values(report["config"].get("max_concurrency") for report in reports),
+            "max_good_source_chars": _unique_values(
+                report["config"].get("max_good_source_chars") for report in reports
+            ),
         },
         "input": {
             "bytes": sum(report["input"]["bytes"] for report in reports),
@@ -394,6 +400,10 @@ def _sum_counters(items: Any) -> dict[str, int]:
 
 def _unique_sorted(values: Any) -> list[str]:
     return sorted({str(value) for value in values})
+
+
+def _unique_values(values: Any) -> list[Any]:
+    return sorted({value for value in values if value is not None})
 
 
 def _aggregate_llm_failed(reports: list[dict[str, Any]]) -> int:
@@ -691,6 +701,7 @@ def _report(
             "max_units": args.max_units,
             "window_size": args.window_size,
             "max_concurrency": args.max_concurrency if cfg else 1,
+            "max_good_source_chars": args.max_good_source_chars,
         },
         "speed": {
             "wall_sec": round(wall_sec, 3),
