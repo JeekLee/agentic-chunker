@@ -65,7 +65,10 @@ def test_lexical_gold_report_checks_expanded_graph_context() -> None:
 
 def test_aggregate_reports_sums_counts_and_averages_ratios() -> None:
     evaluator = _load_evaluator()
-    reports = [_report(10, 1.0, 0.5, False), _report(20, 2.0, 1.0, True, llm_calls=2)]
+    reports = [
+        _report(10, 1.0, 0.5, False, max_units=8, window_size=10, max_concurrency=1),
+        _report(20, 2.0, 1.0, True, llm_calls=2, max_units=12, window_size=20, max_concurrency=4),
+    ]
 
     aggregate = evaluator._aggregate_reports(reports)
 
@@ -74,6 +77,10 @@ def test_aggregate_reports_sums_counts_and_averages_ratios() -> None:
         "profiles": ["custom"],
         "modes": ["deterministic", "llm"],
         "models": ["m"],
+        "max_units": [8, 12],
+        "window_size": [10, 20],
+        "max_concurrency": [1, 4],
+        "max_good_source_chars": [6000],
     }
     assert aggregate["input"]["bytes"] == 30
     assert aggregate["speed"]["wall_sec"] == 3.0
@@ -332,6 +339,10 @@ def _report(
     table_coverage: float,
     unit_coverage_ok: bool,
     llm_calls: int = 0,
+    max_units: int = 8,
+    window_size: int = 10,
+    max_concurrency: int = 4,
+    max_good_source_chars: int = 6000,
 ) -> dict:
     missing_units = [] if unit_coverage_ok else [1]
     llm_call_summary = {}
@@ -361,6 +372,10 @@ def _report(
             "profile": "custom",
             "mode": "llm" if llm_calls else "deterministic",
             "model": "m" if llm_calls else None,
+            "max_units": max_units,
+            "window_size": window_size,
+            "max_concurrency": max_concurrency,
+            "max_good_source_chars": max_good_source_chars,
         },
         "speed": {"wall_sec": wall_sec, "llm_calls": llm_calls, "llm_call_summary": llm_call_summary},
         "chunking_quality": {
