@@ -22,6 +22,7 @@ def build_document_graph(chunks: list[Chunk], *, document_id: str = "document:0"
     edge_keys: set[tuple[str, str, str]] = set()
     section_ids: dict[str, str] = {}
     table_id_to_nodes: dict[str, list[tuple[str, dict]]] = {}
+    table_sequence_nodes: dict[tuple, list[tuple[int, str, dict]]] = {}
 
     def add_node(node: DocumentNode) -> None:
         nodes.setdefault(node.id, node)
@@ -70,10 +71,23 @@ def build_document_graph(chunks: list[Chunk], *, document_id: str = "document:0"
             table_id = table.get("table_id")
             if isinstance(table_id, str) and table_id:
                 table_id_to_nodes.setdefault(table_id, []).append((node_id, table))
+            sequence_key = _table_sequence_key(table)
+            part_index = table.get("part_index")
+            if sequence_key is not None and isinstance(part_index, int):
+                table_sequence_nodes.setdefault(sequence_key, []).append((part_index, node_id, table))
 
     for prev, curr in zip(chunks, chunks[1:]):
         add_edge(prev.id, curr.id, "NEXT")
         add_edge(curr.id, prev.id, "PREVIOUS")
+
+    for sequence in table_sequence_nodes.values():
+        ordered = sorted(sequence, key=lambda item: item[0])
+        for (_, source_id, source_table), (target_part, target_id, target_table) in zip(ordered, ordered[1:]):
+            add_edge(source_id, target_id, "CONTINUES", {
+                "table_id": source_table.get("table_id", ""),
+                "part_index": target_part,
+                "part_total": target_table.get("part_total"),
+            })
 
     for chunk in chunks:
         for table_id in table_references(chunk.source):
@@ -109,6 +123,29 @@ def local_document_graph(graph: DocumentGraph, center_chunk_id: str) -> Document
                 if edge.source_id not in included_ids:
                     included_ids.add(edge.source_id)
                     changed = True
+
+    for node_id in list(included_ids):
+        node = node_by_id.get(node_id)
+        source_chunk_id = node.metadata.get("source_chunk_id") if node else None
+        if isinstance(source_chunk_id, str) and source_chunk_id not in included_ids:
+            included_ids.add(source_chunk_id)
+            for edge in graph.edges:
+                if edge.source_id == source_chunk_id and edge.target_id == node_id:
+                    included_edges.append(edge)
+
+    continuation_changed = True
+    while continuation_changed:
+        continuation_changed = False
+        for edge in graph.edges:
+            if edge.type != "CONTINUES":
+                continue
+            if edge.source_id in included_ids or edge.target_id in included_ids:
+                if edge not in included_edges:
+                    included_edges.append(edge)
+                for node_id in (edge.source_id, edge.target_id):
+                    if node_id not in included_ids:
+                        included_ids.add(node_id)
+                        continuation_changed = True
 
     for node_id in list(included_ids):
         node = node_by_id.get(node_id)
@@ -163,6 +200,19 @@ def _table_node_id(chunk: Chunk, table: dict, table_no: int) -> str:
     if table_id:
         return f"table:{_slug(str(table_id))}:{chunk.index}:{table_no}"
     return f"table:{chunk.index}:{table_no}"
+
+
+def _table_sequence_key(table: dict) -> tuple | None:
+    part_total = table.get("part_total")
+    if not isinstance(part_total, int) or part_total <= 1:
+        return None
+    table_id = table.get("table_id")
+    if isinstance(table_id, str) and table_id:
+        return ("table_id", table_id)
+    source_span = table.get("source_span")
+    if isinstance(source_span, (list, tuple)) and len(source_span) == 2:
+        return ("source_span", tuple(source_span))
+    return None
 
 
 def _slug(text: str) -> str:

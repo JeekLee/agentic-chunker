@@ -8,13 +8,18 @@ from __future__ import annotations
 
 import re
 
-_CAPTION_LINE_RE = re.compile(r"^\s*\**\s*\[?\s*표\s*\d+\s*\]?\s*\**\s*$", re.MULTILINE)
-_TABLE_REF_RE = re.compile(r"(?:\[?\s*표\s*(\d+)\s*\]?|→\s*표\s*(\d+))")
+_CAPTION_LINE_RE = re.compile(
+    r"^\s*(?:\**\s*\[?\s*표\s*\d+\s*\]?\s*\**\s*|\**\s*<\s*표\s*\d+\s*>.*)$",
+    re.MULTILINE,
+)
+_APPENDIX_LABEL_RE = re.compile(r"\[?\s*별\s*표\s*\d+\s*\]?")
+_TABLE_REF_RE = re.compile(r"(?:→\s*표\s*(\d+)|(?<![가-힣])\[?\s*표\s*(\d+)\s*\]?)")
 
 
 def table_references(source: str) -> list[str]:
     """Return unique Korean table labels referenced by display source text."""
     text = _CAPTION_LINE_RE.sub("", source)
+    text = _APPENDIX_LABEL_RE.sub("", text)
     refs: list[str] = []
     for match in _TABLE_REF_RE.finditer(text):
         num = match.group(1) or match.group(2)

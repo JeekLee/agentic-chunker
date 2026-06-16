@@ -1,4 +1,4 @@
-"""Evaluate one Markdown file across speed, chunking, graph, and search signals.
+"""Evaluate Markdown files across speed, chunking, graph, and search signals.
 
 Run with a real OpenAI-compatible endpoint:
 
@@ -9,7 +9,7 @@ Run with a real OpenAI-compatible endpoint:
 
 Run deterministic parsing/graph checks without LLM calls:
 
-    .venv/bin/python examples/evaluate_md.py /tmp/mdout/val_01_image_hwpx.md --no-llm
+    .venv/bin/python examples/evaluate_md.py /tmp/mdout/*.md --no-llm
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from collections import Counter
 import json
 import os
 from pathlib import Path
+import re
 import statistics
 import time
 from typing import Any
@@ -33,32 +34,27 @@ from agentic_chunker._units import build_units
 
 def main() -> int:
     args = _parse_args()
-    markdown = args.path.read_text(encoding=args.encoding)
     cfg = None if args.no_llm else _llm_config(args)
-
-    result, llm_calls, wall_sec = _run(markdown, cfg, args)
-    blocks = split(markdown)
-    units = build_units(blocks)
-    report = _report(
-        path=args.path,
-        markdown=markdown,
-        blocks=blocks,
-        units=units,
-        result=result,
-        llm_calls=llm_calls,
-        wall_sec=wall_sec,
-        args=args,
-        cfg=cfg,
-    )
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    reports = [_evaluate_path(path, cfg, args) for path in args.paths]
+    if args.aggregate_only:
+        payload = _aggregate_reports(reports)
+    elif len(reports) == 1:
+        payload = reports[0]
+    else:
+        payload = {
+            "aggregate": _aggregate_reports(reports),
+            "files": reports,
+        }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("path", type=Path)
+    parser.add_argument("paths", nargs="+", type=Path)
     parser.add_argument("--encoding", default="utf-8")
     parser.add_argument("--no-llm", action="store_true")
+    parser.add_argument("--aggregate-only", action="store_true")
     parser.add_argument("--llm-url", default=os.environ.get("LLM_URL", ""))
     parser.add_argument("--llm-api-key", default=os.environ.get("LLM_API_KEY", ""))
     parser.add_argument("--llm-model", default=os.environ.get("LLM_MODEL", ""))
@@ -67,6 +63,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--window-size", type=int, default=10)
     parser.add_argument("--max-concurrency", type=int, default=4)
     parser.add_argument("--max-good-source-chars", type=int, default=6000)
+    parser.add_argument(
+        "--gold-query",
+        action="append",
+        default=[],
+        metavar="QUERY::EXPECTED_TEXT",
+        help="Optional lexical retrieval check. EXPECTED_TEXT may be omitted.",
+    )
     return parser.parse_args()
 
 
@@ -132,6 +135,24 @@ def _run(
     return result, llm_calls, wall_sec
 
 
+def _evaluate_path(path: Path, cfg: LlmConfig | None, args: argparse.Namespace) -> dict[str, Any]:
+    markdown = path.read_text(encoding=args.encoding)
+    result, llm_calls, wall_sec = _run(markdown, cfg, args)
+    blocks = split(markdown)
+    units = build_units(blocks)
+    return _report(
+        path=path,
+        markdown=markdown,
+        blocks=blocks,
+        units=units,
+        result=result,
+        llm_calls=llm_calls,
+        wall_sec=wall_sec,
+        args=args,
+        cfg=cfg,
+    )
+
+
 def _call_kind(prompt: str) -> str:
     if "evidence unit 목록" in prompt:
         return "group"
@@ -140,6 +161,81 @@ def _call_kind(prompt: str) -> str:
     if "질문을 정확히 3개" in prompt:
         return "retry_questions"
     return "other"
+
+
+def _aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "files": len(reports),
+        "input": {
+            "bytes": sum(report["input"]["bytes"] for report in reports),
+            "chars": sum(report["input"]["chars"] for report in reports),
+            "lines": sum(report["input"]["lines"] for report in reports),
+            "blocks": sum(report["input"]["blocks"] for report in reports),
+            "units": sum(report["input"]["units"] for report in reports),
+            "unit_kinds": _sum_counters(report["input"]["unit_kinds"] for report in reports),
+        },
+        "speed": {
+            "wall_sec": round(sum(report["speed"]["wall_sec"] for report in reports), 3),
+            "llm_calls": sum(report["speed"]["llm_calls"] for report in reports),
+        },
+        "chunking_quality": {
+            "chunks": sum(report["chunking_quality"]["chunks"] for report in reports),
+            "tiny_chunks": sum(report["chunking_quality"]["tiny_chunks"] for report in reports),
+            "oversized_chunks": sum(report["chunking_quality"]["oversized_chunks"] for report in reports),
+            "unit_coverage_ok": all(
+                not report["chunking_quality"]["unit_coverage"]["missing"]
+                and not report["chunking_quality"]["unit_coverage"]["duplicates"]
+                for report in reports
+            ),
+        },
+        "graph_quality": {
+            "nodes": sum(report["graph_quality"]["nodes"] for report in reports),
+            "edges": sum(report["graph_quality"]["edges"] for report in reports),
+            "edge_types": _sum_counters(report["graph_quality"]["edge_types"] for report in reports),
+            "avg_table_reference_coverage": _average(
+                report["graph_quality"]["table_reference_coverage"] for report in reports
+            ),
+            "files_with_missing_table_refs": sum(
+                1 for report in reports if report["graph_quality"]["missing_table_reference_edges"]
+            ),
+        },
+        "search_quality_expected": {
+            "avg_metadata_complete_ratio": _average(
+                report["search_quality_expected"]["metadata_complete_ratio"] for report in reports
+            ),
+            "chunks_missing_keywords": sum(
+                report["search_quality_expected"]["chunks_missing_keywords"] for report in reports
+            ),
+            "chunks_with_questions_lt_2": sum(
+                report["search_quality_expected"]["chunks_with_questions_lt_2"] for report in reports
+            ),
+            "avg_table_context_coverage": _average(
+                report["search_quality_expected"]["table_context_coverage"] for report in reports
+            ),
+            "gold_hit_at_5": _aggregate_gold_hit(reports),
+        },
+    }
+
+
+def _sum_counters(items: Any) -> dict[str, int]:
+    counter: Counter = Counter()
+    for item in items:
+        counter.update(item)
+    return dict(counter)
+
+
+def _average(values: Any) -> float:
+    values = list(values)
+    return round(statistics.mean(values), 4) if values else 0.0
+
+
+def _aggregate_gold_hit(reports: list[dict[str, Any]]) -> float | None:
+    values = [
+        report["search_quality_expected"]["lexical_gold_queries"]["hit_at_5"]
+        for report in reports
+        if report["search_quality_expected"]["lexical_gold_queries"]["hit_at_5"] is not None
+    ]
+    return _average(values) if values else None
 
 
 def _report(
@@ -224,6 +320,7 @@ def _report(
             "chunks_with_questions_lt_2": sum(1 for chunk in chunks if len(chunk.questions_answered) < 2),
             "avg_embedding_chars": round(statistics.mean(len(chunk.embedding_text) for chunk in chunks), 1) if chunks else 0,
             "table_context_coverage": _ratio(len(raw_refs & ref_ids), len(raw_refs)),
+            "lexical_gold_queries": _lexical_gold_report(chunks, args.gold_query),
         },
     }
 
@@ -261,6 +358,100 @@ def _ratio(numerator: int, denominator: int) -> float:
 
 def _unit_kind(unit: Any) -> str:
     return unit.metadata.get("common", {}).get("chunk_kind", "?")
+
+
+def _lexical_gold_report(chunks: list, specs: list[str], top_k: int = 5) -> dict[str, Any]:
+    queries = [_parse_gold_query(spec) for spec in specs]
+    if not queries:
+        return {"count": 0, "hit_at_5": None, "queries": []}
+
+    results = []
+    hits = 0
+    for query, expected in queries:
+        ranked = _rank_chunks(query, chunks)[:top_k]
+        hit = bool(expected) and any(_contains_expected(chunk, expected) for _, chunk in ranked)
+        if hit:
+            hits += 1
+        results.append({
+            "query": query,
+            "expected": expected,
+            "hit_at_5": hit if expected else None,
+            "top_chunks": [
+                {
+                    "index": chunk.index,
+                    "score": score,
+                    "title": chunk.title,
+                    "preview": chunk.source.replace("\n", " ")[:160],
+                }
+                for score, chunk in ranked
+            ],
+        })
+    expected_count = sum(1 for _, expected in queries if expected)
+    return {
+        "count": len(queries),
+        "hit_at_5": _ratio(hits, expected_count) if expected_count else None,
+        "queries": results,
+    }
+
+
+def _parse_gold_query(spec: str) -> tuple[str, str]:
+    if "::" not in spec:
+        return spec.strip(), ""
+    query, expected = spec.split("::", 1)
+    return query.strip(), expected.strip()
+
+
+def _rank_chunks(query: str, chunks: list) -> list[tuple[int, Any]]:
+    query_terms = _terms(query)
+    ranked = []
+    for chunk in chunks:
+        text = _search_text(chunk)
+        terms = _terms(text)
+        term_counts = Counter(terms)
+        score = sum(term_counts.get(term, 0) for term in query_terms)
+        if query and query in text:
+            score += 5
+        for table_id in _chunk_table_ids(chunk):
+            if table_id and table_id in query:
+                score += 80
+        if chunk.title and chunk.title in query:
+            score += 30
+        ranked.append((score, chunk))
+    return sorted(ranked, key=lambda item: (-item[0], item[1].index))
+
+
+def _search_text(chunk: Any) -> str:
+    parts = [
+        chunk.title,
+        chunk.summary,
+        " ".join(chunk.keywords),
+        " ".join(chunk.questions_answered),
+        chunk.embedding_text,
+        chunk.source,
+    ]
+    return "\n".join(part for part in parts if part)
+
+
+def _terms(text: str) -> list[str]:
+    return [term.lower() for term in re.findall(r"[0-9A-Za-z가-힣]+", text)]
+
+
+def _contains_expected(chunk: Any, expected: str) -> bool:
+    needle = expected.lower()
+    return needle in _search_text(chunk).lower()
+
+
+def _chunk_table_ids(chunk: Any) -> list[str]:
+    table_ids: list[str] = []
+    table = chunk.metadata.get("table") if isinstance(chunk.metadata, dict) else None
+    if isinstance(table, dict) and isinstance(table.get("table_id"), str):
+        table_ids.append(table["table_id"])
+    tables = chunk.metadata.get("tables") if isinstance(chunk.metadata, dict) else None
+    if isinstance(tables, list):
+        for item in tables:
+            if isinstance(item, dict) and isinstance(item.get("table_id"), str):
+                table_ids.append(item["table_id"])
+    return [table_id for table_id in table_ids if table_id]
 
 
 if __name__ == "__main__":
