@@ -32,6 +32,10 @@ from agentic_chunker._split import split
 from agentic_chunker._units import build_units
 
 
+DEFAULT_WINDOW_SIZE = 10
+LLM_SMOKE_WINDOW_SIZE = 20
+
+
 def main() -> int:
     args = _parse_args()
     _prepare_args(args)
@@ -77,7 +81,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--llm-model", default=os.environ.get("LLM_MODEL", ""))
     parser.add_argument("--timeout", type=int, default=int(os.environ.get("LLM_TIMEOUT", "180")))
     parser.add_argument("--max-units", type=int, default=8)
-    parser.add_argument("--window-size", type=int, default=10)
+    parser.add_argument("--window-size", type=int)
     parser.add_argument("--max-concurrency", type=int, default=4)
     parser.add_argument("--max-good-source-chars", type=int, default=6000)
     parser.add_argument(
@@ -116,6 +120,11 @@ def _prepare_args(args: argparse.Namespace) -> None:
     elif args.profile == "llm-smoke":
         args.no_llm = False
         args.aggregate_only = True
+        if args.window_size is None:
+            args.window_size = LLM_SMOKE_WINDOW_SIZE
+
+    if args.window_size is None:
+        args.window_size = DEFAULT_WINDOW_SIZE
 
     args.benchmark_profile = _benchmark_profile_name(args, profile_data)
     if not args.paths:

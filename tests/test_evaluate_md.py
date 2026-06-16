@@ -153,6 +153,46 @@ def test_named_profile_full_no_llm_sets_benchmark_defaults() -> None:
     assert args.benchmark_profile == "full-no-llm"
 
 
+def test_named_profile_llm_smoke_sets_speed_defaults() -> None:
+    evaluator = _load_evaluator()
+    args = _args(profile="llm-smoke", paths=[Path("a.md")])
+
+    evaluator._prepare_args(args)
+
+    assert args.no_llm is False
+    assert args.aggregate_only is True
+    assert args.window_size == 20
+    assert args.benchmark_profile == "llm-smoke"
+
+
+def test_profile_file_window_size_overrides_llm_smoke_default(tmp_path: Path) -> None:
+    evaluator = _load_evaluator()
+    profile_path = tmp_path / "profile.json"
+    profile_path.write_text(
+        json.dumps({
+            "profile": "llm-smoke",
+            "paths": ["a.md"],
+            "window_size": 40,
+        }),
+        encoding="utf-8",
+    )
+    args = _args(profile_file=profile_path)
+
+    evaluator._prepare_args(args)
+
+    assert args.profile == "llm-smoke"
+    assert args.window_size == 40
+
+
+def test_cli_window_size_overrides_llm_smoke_default() -> None:
+    evaluator = _load_evaluator()
+    args = _args(profile="llm-smoke", paths=[Path("a.md")], window_size=40)
+
+    evaluator._prepare_args(args)
+
+    assert args.window_size == 40
+
+
 def test_profile_file_overrides_paths_mode_and_gold_queries(tmp_path: Path) -> None:
     evaluator = _load_evaluator()
     first = tmp_path / "first.md"
@@ -274,7 +314,7 @@ def _args(**overrides):
         "llm_model": "",
         "timeout": 180,
         "max_units": 8,
-        "window_size": 10,
+        "window_size": None,
         "max_concurrency": 4,
         "max_good_source_chars": 6000,
         "gold_query": [],
