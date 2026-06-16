@@ -47,6 +47,10 @@ def main() -> int:
             "aggregate": _aggregate_reports(reports),
             "files": reports,
         }
+    if args.compare_report:
+        payload["comparison"] = _compare_reports(_load_report(args.compare_report), payload)
+    if args.save_report:
+        _save_report(args.save_report, payload)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
@@ -87,6 +91,16 @@ def _parse_args() -> argparse.Namespace:
         "--gold-query-file",
         type=Path,
         help="JSON file with optional default queries and per-file lexical retrieval checks.",
+    )
+    parser.add_argument(
+        "--save-report",
+        type=Path,
+        help="Write the benchmark JSON payload to this path.",
+    )
+    parser.add_argument(
+        "--compare-report",
+        type=Path,
+        help="Compare the current benchmark payload with a previous report JSON.",
     )
     return parser.parse_args()
 
@@ -146,6 +160,10 @@ def _apply_profile_file(args: argparse.Namespace, data: dict[str, Any]) -> None:
         args.gold_query = _profile_string_list(data.get("gold_query", data.get("gold_queries")), "gold_queries")
     if "gold_query_file" in data:
         args.gold_query_file = Path(_profile_string(data["gold_query_file"], "gold_query_file"))
+    if "save_report" in data:
+        args.save_report = Path(_profile_string(data["save_report"], "save_report"))
+    if "compare_report" in data:
+        args.compare_report = Path(_profile_string(data["compare_report"], "compare_report"))
 
     for field in ("aggregate_only",):
         if field in data:
@@ -438,6 +456,156 @@ def _aggregate_tiny_examples(reports: list[dict[str, Any]], limit: int = 10) -> 
             if len(examples) >= limit:
                 return examples
     return examples
+
+
+_COMPARISON_METRICS: dict[str, tuple[tuple[str, str], ...]] = {
+    "speed": (
+        ("wall_sec", "lower"),
+        ("llm_failed", "lower"),
+    ),
+    "chunking_quality": (
+        ("tiny_chunks", "lower"),
+        ("oversized_chunks", "lower"),
+        ("files_with_tiny_chunks", "lower"),
+        ("unit_coverage_ok", "truthy"),
+    ),
+    "graph_quality": (
+        ("avg_table_reference_coverage", "higher"),
+        ("files_with_missing_table_refs", "lower"),
+    ),
+    "search_quality_expected": (
+        ("avg_metadata_complete_ratio", "higher"),
+        ("chunks_missing_keywords", "lower"),
+        ("chunks_with_questions_lt_2", "lower"),
+        ("avg_table_context_coverage", "higher"),
+        ("gold_hit_at_5", "higher"),
+        ("expanded_gold_hit_at_5", "higher"),
+    ),
+}
+
+
+def _load_report(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid benchmark report JSON in {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit("Benchmark report must be a JSON object.")
+    return data
+
+
+def _save_report(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _benchmark_subject(payload: dict[str, Any]) -> dict[str, Any]:
+    aggregate = payload.get("aggregate")
+    if isinstance(aggregate, dict):
+        return aggregate
+    return payload
+
+
+def _compare_reports(baseline_payload: dict[str, Any], current_payload: dict[str, Any]) -> dict[str, Any]:
+    baseline = _benchmark_subject(baseline_payload)
+    current = _benchmark_subject(current_payload)
+    areas: dict[str, dict[str, dict[str, Any]]] = {}
+    summary = {"improved": 0, "regressed": 0, "unchanged": 0, "missing": 0}
+    candidates: list[dict[str, Any]] = []
+
+    for area, metrics in _COMPARISON_METRICS.items():
+        area_report = {}
+        for metric, direction in metrics:
+            comparison = _compare_metric(
+                baseline.get(area, {}).get(metric),
+                current.get(area, {}).get(metric),
+                direction,
+            )
+            area_report[metric] = comparison
+            summary[comparison["status"]] += 1
+            if comparison["status"] == "regressed":
+                candidates.append({
+                    "area": area,
+                    "metric": metric,
+                    "current": comparison["current"],
+                    "baseline": comparison["baseline"],
+                    "reason": comparison["reason"],
+                })
+        areas[area] = area_report
+
+    return {
+        "baseline_config": baseline.get("config", {}),
+        "current_config": current.get("config", {}),
+        "summary": summary,
+        "areas": areas,
+        "improvement_candidates": candidates,
+    }
+
+
+def _compare_metric(baseline: Any, current: Any, direction: str) -> dict[str, Any]:
+    if baseline is None or current is None:
+        return {
+            "baseline": baseline,
+            "current": current,
+            "delta": None,
+            "pct_delta": None,
+            "direction": _direction_label(direction),
+            "status": "missing",
+            "reason": "baseline or current value is missing",
+        }
+
+    delta = _numeric_delta(baseline, current)
+    result = {
+        "baseline": baseline,
+        "current": current,
+        "delta": delta,
+        "pct_delta": _percent_delta(baseline, current),
+        "direction": _direction_label(direction),
+        "status": "unchanged",
+        "reason": "value is unchanged",
+    }
+
+    if direction == "lower":
+        if current < baseline:
+            result.update({"status": "improved", "reason": "lower is better and current value decreased"})
+        elif current > baseline:
+            result.update({"status": "regressed", "reason": "lower is better but current value increased"})
+    elif direction == "higher":
+        if current > baseline:
+            result.update({"status": "improved", "reason": "higher is better and current value increased"})
+        elif current < baseline:
+            result.update({"status": "regressed", "reason": "higher is better but current value decreased"})
+    elif direction == "truthy":
+        if bool(current) and not bool(baseline):
+            result.update({"status": "improved", "reason": "true is better and current value became true"})
+        elif bool(baseline) and not bool(current):
+            result.update({"status": "regressed", "reason": "true is better but current value became false"})
+    return result
+
+
+def _direction_label(direction: str) -> str:
+    if direction == "lower":
+        return "lower_is_better"
+    if direction == "higher":
+        return "higher_is_better"
+    return "true_is_better"
+
+
+def _numeric_delta(baseline: Any, current: Any) -> float | int | None:
+    if isinstance(baseline, bool) or isinstance(current, bool):
+        return None
+    if isinstance(baseline, (int, float)) and isinstance(current, (int, float)):
+        delta = current - baseline
+        return round(delta, 4) if isinstance(delta, float) else delta
+    return None
+
+
+def _percent_delta(baseline: Any, current: Any) -> float | None:
+    if isinstance(baseline, bool) or isinstance(current, bool):
+        return None
+    if not isinstance(baseline, (int, float)) or not isinstance(current, (int, float)) or baseline == 0:
+        return None
+    return round(((current - baseline) / abs(baseline)) * 100, 2)
 
 
 def _report(
