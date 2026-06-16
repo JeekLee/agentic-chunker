@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 import json
+import re
 
 from ._models import Chunk
 from .llm import LlmConfig
@@ -14,6 +15,23 @@ _TABLE_PAYLOAD_CHARS = 700
 _TEXT_PAYLOAD_CHARS = 650
 _TINY_SOURCE_CHARS = 20
 _TEXTUAL_KINDS = {"text", "heading"}
+_KEYWORD_RE = re.compile(r"[0-9A-Za-z가-힣]{2,}")
+_SPACED_HANGUL_RE = re.compile(r"(?<![가-힣])[가-힣](?:\s+[가-힣])+(?![가-힣])")
+_KEYWORD_STOPWORDS = {
+    "그리고",
+    "그러나",
+    "대한",
+    "따라",
+    "또는",
+    "및",
+    "사항",
+    "설명한다",
+    "에서",
+    "으로",
+    "이를",
+    "있는",
+    "한다",
+}
 
 _PROMPT = """\
 당신은 RAG 인덱싱용 청크 편집자입니다.
@@ -398,6 +416,12 @@ def _fallback_keywords(units: list[Chunk]) -> list[str]:
         for keyword in unit.keywords:
             if keyword not in keywords:
                 keywords.append(keyword)
+    if len(keywords) < 3:
+        for keyword in _source_keywords(units):
+            if keyword not in keywords:
+                keywords.append(keyword)
+            if len(keywords) >= 20:
+                break
     return keywords[:20]
 
 
@@ -407,10 +431,59 @@ def _fallback_questions(units: list[Chunk], title: str) -> list[str]:
         for question in unit.questions_answered:
             if question not in questions:
                 questions.append(question)
-    if questions:
+    if len(questions) >= 2:
         return questions[:3]
     topic = title or _fallback_title(units)
-    return [f"{topic}에 대해 무엇을 알 수 있나요?"] if topic else []
+    candidates = [
+        f"{topic}에 대해 무엇을 알 수 있나요?" if topic else "이 청크에 대해 무엇을 알 수 있나요?",
+        f"{topic}에서 확인해야 할 사항은 무엇인가요?" if topic else "이 청크에서 확인해야 할 사항은 무엇인가요?",
+    ]
+    for question in candidates:
+        if question not in questions:
+            questions.append(question)
+        if len(questions) >= 2:
+            break
+    return questions[:3]
+
+
+def _source_keywords(units: list[Chunk]) -> list[str]:
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for unit in units:
+        text = unit.text or unit.embedding_text or unit.summary or unit.title
+        for keyword in _spaced_hangul_keywords(text):
+            if keyword not in counts:
+                order.append(keyword)
+                counts[keyword] = 0
+            counts[keyword] += 1
+        for token in _KEYWORD_RE.findall(text):
+            keyword = token.strip()
+            if not _use_keyword(keyword):
+                continue
+            if keyword not in counts:
+                order.append(keyword)
+                counts[keyword] = 0
+            counts[keyword] += 1
+    return sorted(order, key=lambda keyword: (-counts[keyword], order.index(keyword)))[:20]
+
+
+def _spaced_hangul_keywords(text: str) -> list[str]:
+    keywords: list[str] = []
+    for match in _SPACED_HANGUL_RE.finditer(text):
+        keyword = re.sub(r"\s+", "", match.group(0))
+        if _use_keyword(keyword) and keyword not in keywords:
+            keywords.append(keyword)
+    return keywords
+
+
+def _use_keyword(keyword: str) -> bool:
+    if keyword.lower() in _KEYWORD_STOPWORDS:
+        return False
+    if keyword.isdigit():
+        return False
+    if len(keyword) < 2:
+        return False
+    return True
 
 
 def _embedding_text(units: list[Chunk], title: str, summary: str, keywords: list[str]) -> str:
