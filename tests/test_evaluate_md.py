@@ -159,6 +159,8 @@ def test_profile_file_overrides_paths_mode_and_gold_queries(tmp_path: Path) -> N
     second = tmp_path / "second.md"
     profile_path = tmp_path / "profile.json"
     gold_path = tmp_path / "gold.json"
+    save_path = tmp_path / "current.json"
+    compare_path = tmp_path / "baseline.json"
     profile_path.write_text(
         json.dumps({
             "name": "mdout-smoke",
@@ -166,6 +168,8 @@ def test_profile_file_overrides_paths_mode_and_gold_queries(tmp_path: Path) -> N
             "paths": [str(first), str(second)],
             "gold_queries": ["질의::정답"],
             "gold_query_file": str(gold_path),
+            "save_report": str(save_path),
+            "compare_report": str(compare_path),
             "aggregate_only": True,
             "max_concurrency": 2,
             "timeout": 90,
@@ -180,6 +184,8 @@ def test_profile_file_overrides_paths_mode_and_gold_queries(tmp_path: Path) -> N
     assert args.no_llm is False
     assert args.gold_query == ["질의::정답"]
     assert args.gold_query_file == gold_path
+    assert args.save_report == save_path
+    assert args.compare_report == compare_path
     assert args.aggregate_only is True
     assert args.max_concurrency == 2
     assert args.timeout == 90
@@ -206,6 +212,42 @@ def test_profile_file_rejects_boolean_integer_options(tmp_path: Path) -> None:
         raise AssertionError("boolean timeout should be rejected")
 
 
+def test_compare_reports_groups_metric_statuses_and_candidates() -> None:
+    evaluator = _load_evaluator()
+    baseline = evaluator._aggregate_reports([
+        _report(10, 10.0, 0.5, True),
+        _report(20, 10.0, 1.0, True),
+    ])
+    current = json.loads(json.dumps(baseline))
+    current["speed"]["wall_sec"] = 12.0
+    current["chunking_quality"]["tiny_chunks"] = 1
+    current["graph_quality"]["avg_table_reference_coverage"] = 1.0
+    current["search_quality_expected"]["chunks_missing_keywords"] = 2
+
+    comparison = evaluator._compare_reports(baseline, current)
+
+    assert comparison["areas"]["speed"]["wall_sec"]["status"] == "improved"
+    assert comparison["areas"]["chunking_quality"]["tiny_chunks"]["status"] == "improved"
+    assert comparison["areas"]["graph_quality"]["avg_table_reference_coverage"]["status"] == "improved"
+    assert comparison["areas"]["search_quality_expected"]["chunks_missing_keywords"]["status"] == "regressed"
+    assert comparison["summary"]["regressed"] == 1
+    assert comparison["improvement_candidates"][0] == {
+        "area": "search_quality_expected",
+        "metric": "chunks_missing_keywords",
+        "current": 2,
+        "baseline": 0,
+        "reason": "lower is better but current value increased",
+    }
+
+
+def test_benchmark_subject_prefers_aggregate_payload() -> None:
+    evaluator = _load_evaluator()
+    aggregate = {"files": 2, "speed": {"wall_sec": 1.0}}
+    payload = {"aggregate": aggregate, "files": [{"speed": {"wall_sec": 2.0}}]}
+
+    assert evaluator._benchmark_subject(payload) is aggregate
+
+
 def _args(**overrides):
     values = {
         "paths": [],
@@ -224,6 +266,8 @@ def _args(**overrides):
         "max_good_source_chars": 6000,
         "gold_query": [],
         "gold_query_file": None,
+        "save_report": None,
+        "compare_report": None,
     }
     values.update(overrides)
     return SimpleNamespace(**values)

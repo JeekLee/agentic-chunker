@@ -134,13 +134,26 @@ LLM_MODEL=qwen3-... \
 
 .venv/bin/python examples/evaluate_md.py /tmp/mdout/*.md \
   --profile full-no-llm \
-  --gold-query-file /tmp/mdout/gold_queries.json
+  --gold-query-file /tmp/mdout/gold_queries.json \
+  --save-report /tmp/mdout/reports/full-no-llm-current.json
 ```
 
 The aggregate report includes tiny chunk breakdowns by kind, representative
 examples, direct lexical `gold_hit_at_5`, and graph-expanded
 `expanded_gold_hit_at_5`. Aggregate speed output also summarizes LLM calls by
 kind, including failure counts, timing, and prompt sizes.
+
+To compare a new run against a previous report, pass `--compare-report`. The
+output includes a `comparison` section grouped by speed, chunking quality, graph
+quality, and expected search quality, plus concrete improvement candidates.
+
+```bash
+.venv/bin/python examples/evaluate_md.py /tmp/mdout/*.md \
+  --profile full-no-llm \
+  --gold-query-file /tmp/mdout/gold_queries.json \
+  --compare-report /tmp/mdout/reports/full-no-llm-baseline.json \
+  --save-report /tmp/mdout/reports/full-no-llm-current.json
+```
 
 For regular quality checks, run both a deterministic full-corpus benchmark and
 a small LLM smoke benchmark:
@@ -189,6 +202,8 @@ You can also save benchmark settings as a profile file:
     "/tmp/mdout/03_diagram_hwp.md"
   ],
   "gold_query_file": "/tmp/mdout/gold_queries.json",
+  "compare_report": "/tmp/mdout/reports/llm_smoke_baseline.json",
+  "save_report": "/tmp/mdout/reports/llm_smoke_current.json",
   "aggregate_only": true,
   "max_concurrency": 4,
   "timeout": 180
