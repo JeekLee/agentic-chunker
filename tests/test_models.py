@@ -1,6 +1,6 @@
 from dataclasses import asdict
 
-from agentic_chunker._common import Block, Proposition, Chunk, DocumentGraph
+from agentic_chunker._models import Block, Proposition, Chunk, DocumentGraph
 
 
 def test_block_holds_text_offsets_and_header():

@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
-from ._common import Chunk, Proposition
+from ._models import Chunk, Proposition
 from .llm import LlmConfig
 from .llm import chat_json as _real_chat_json
 

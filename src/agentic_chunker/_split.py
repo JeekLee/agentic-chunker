@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from ._common import Block
+from ._models import Block
 
 _HEADER_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 

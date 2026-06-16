@@ -1,7 +1,5 @@
 from agentic_chunker import AgenticChunker, LlmConfig
-from agentic_chunker._common import Chunk
 from agentic_chunker._split import split
-from agentic_chunker._tables import link_table_references
 from agentic_chunker._tables import split_structured_blocks
 
 
@@ -71,14 +69,14 @@ def test_general_table_keeps_markdown_table_for_display():
     assert "코드=A; 부위=뇌; 코드=H; 부위=남성생식기." in chunks[0].embedding_text
 
 
-def test_agentic_chunker_links_qa_reference_to_table_chunk(monkeypatch):
+def test_agentic_chunker_leaves_table_reference_to_document_graph(monkeypatch):
     captured = {}
 
     def fake_group_units(units, cfg, **kw):
         captured["kinds"] = [u.metadata["common"]["chunk_kind"] for u in units]
         return list(units)
 
-    monkeypatch.setattr("agentic_chunker._group_units", fake_group_units)
+    monkeypatch.setattr("agentic_chunker._chunker._group_units", fake_group_units)
     md = """| 연번 | 질의 | 답변 |
 | --- | --- | --- |
 | 7 | 기재방법은? | JS013에 기재함. → 표 1 |
@@ -94,12 +92,12 @@ def test_agentic_chunker_links_qa_reference_to_table_chunk(monkeypatch):
 
     assert captured["kinds"] == ["table", "table"]
     assert [c.metadata["common"]["chunk_kind"] for c in chunks] == ["table", "table"]
-    assert chunks[0].metadata["references"]["referenced_tables"] == ["표 1"]
-    assert chunks[0].metadata["references"]["linked_table_indices"] == [1]
+    assert "references" not in chunks[0].metadata
     assert chunks[1].text.startswith("**[표 1]**\n\n| 코드 | 부위 |")
+    assert any(edge.type == "REFERS_TO" for edge in chunks[0].document_graph.edges)
 
 
-def test_mixed_text_and_table_only_sends_text_to_llm(monkeypatch):
+def test_mixed_text_and_table_sends_units_to_llm(monkeypatch):
     captured = {}
 
     def fake_group_units(units, cfg, **kw):
@@ -107,7 +105,7 @@ def test_mixed_text_and_table_only_sends_text_to_llm(monkeypatch):
         captured["kinds"] = [u.metadata["common"]["chunk_kind"] for u in units]
         return list(units)
 
-    monkeypatch.setattr("agentic_chunker._group_units", fake_group_units)
+    monkeypatch.setattr("agentic_chunker._chunker._group_units", fake_group_units)
 
     md = """Intro paragraph.
 
@@ -122,48 +120,3 @@ def test_mixed_text_and_table_only_sends_text_to_llm(monkeypatch):
     assert [c.index for c in chunks] == [0, 1]
     assert chunks[0].text == "Intro paragraph."
     assert chunks[1].metadata["common"]["chunk_kind"] == "table"
-
-
-def test_references_are_linked_for_text_and_general_table_chunks():
-    chunks = [
-        Chunk(index=0, text="자세한 코드는 → 표 12 참조.", metadata={"common": {"chunk_kind": "text"}}),
-        Chunk(
-            index=1,
-            text="| 구분 | 설명 |\n| --- | --- |\n| 급여 | 표 12를 따른다 |",
-            metadata={"common": {"chunk_kind": "table"}, "table": {"table_id": ""}},
-        ),
-        Chunk(
-            index=2,
-            text="| 코드 | 값 |\n| --- | --- |\n| EB443 | 충수 |",
-            metadata={"common": {"chunk_kind": "table_part"}, "table": {"table_id": "표 12"}},
-        ),
-        Chunk(
-            index=3,
-            text="| 코드 | 값 |\n| --- | --- |\n| EB444 | 소장·대장 |",
-            metadata={"common": {"chunk_kind": "table_part"}, "table": {"table_id": "표 12"}},
-        ),
-    ]
-
-    link_table_references(chunks)
-
-    assert chunks[0].metadata["references"]["referenced_tables"] == ["표 12"]
-    assert chunks[0].metadata["references"]["linked_table_indices"] == [2, 3]
-    assert chunks[1].metadata["references"]["referenced_tables"] == ["표 12"]
-    assert chunks[1].metadata["references"]["linked_table_indices"] == [2, 3]
-    assert chunks[2].metadata["references"]["referenced_tables"] == []
-    assert chunks[2].metadata["references"]["linked_table_indices"] == []
-
-
-def test_table_caption_does_not_create_self_reference():
-    chunks = [
-        Chunk(
-            index=0,
-            text="**[표 12]**\n\n| 코드 | 값 |\n| --- | --- |\n| EB443 | 충수 |",
-            metadata={"common": {"chunk_kind": "table"}, "table": {"table_id": "표 12"}},
-        ),
-    ]
-
-    link_table_references(chunks)
-
-    assert chunks[0].metadata["references"]["referenced_tables"] == []
-    assert chunks[0].metadata["references"]["linked_table_indices"] == []

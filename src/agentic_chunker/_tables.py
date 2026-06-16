@@ -7,10 +7,9 @@ from __future__ import annotations
 
 import re
 
-from ._common import Block, Chunk
+from ._models import Block, Chunk
 
 _CAPTION_RE = re.compile(r"^\**\s*\[?\s*표\s*(\d+)\s*\]?\s*\**$")
-_TABLE_REF_RE = re.compile(r"(?:\[?\s*표\s*(\d+)\s*\]?|→\s*표\s*(\d+))")
 _BR_RE = re.compile(r"\s*<br\s*/?>\s*", re.IGNORECASE)
 
 
@@ -53,48 +52,6 @@ def split_structured_blocks(blocks: list[Block]) -> tuple[list[Block], list[Chun
     return text_blocks, structured
 
 
-def link_table_references(chunks: list[Chunk]) -> None:
-    """Populate table reference metadata for every chunk kind.
-
-    References are extracted from ``chunk.text`` only because that is the
-    displayable source/evidence text. LLM-generated embedding text is not used
-    for reference discovery.
-    """
-    table_indices: dict[str, list[int]] = {}
-    for chunk in chunks:
-        table_meta = chunk.metadata.get("table", {})
-        table_id = table_meta.get("table_id")
-        if table_id:
-            table_indices.setdefault(table_id, []).append(chunk.index)
-
-    backrefs: dict[int, list[int]] = {}
-    for chunk in chunks:
-        refs_meta = chunk.metadata.setdefault("references", {})
-        existing = refs_meta.get("referenced_tables", [])
-        refs: list[str] = [r for r in existing if isinstance(r, str)]
-        own_table_id = chunk.metadata.get("table", {}).get("table_id")
-        for ref in _table_refs(chunk.text):
-            if ref == own_table_id:
-                continue
-            if ref not in refs:
-                refs.append(ref)
-        refs_meta["referenced_tables"] = refs
-
-        linked: list[int] = []
-        for table_id in refs:
-            for idx in table_indices.get(table_id, []):
-                if idx == chunk.index or table_id == own_table_id:
-                    continue
-                if idx not in linked:
-                    linked.append(idx)
-                    backrefs.setdefault(idx, []).append(chunk.index)
-        refs_meta["linked_table_indices"] = linked
-
-    for chunk in chunks:
-        refs_meta = chunk.metadata.setdefault("references", {})
-        refs_meta["referenced_by_indices"] = sorted(set(backrefs.get(chunk.index, [])))
-
-
 def _caption_id(text: str) -> str:
     m = _CAPTION_RE.match(text.strip())
     return f"표 {m.group(1)}" if m else ""
@@ -111,19 +68,8 @@ def _caption_chunk(block: Block, table_id: str) -> Chunk:
         metadata={
             "common": {"chunk_kind": "table_caption", "section_path": _section_path(block), "display_format": "markdown"},
             "table": {"table_id": table_id},
-            "references": {"referenced_tables": [], "linked_table_indices": []},
         },
     )
-
-
-def _table_refs(text: str) -> list[str]:
-    refs: list[str] = []
-    for m in _TABLE_REF_RE.finditer(text):
-        num = m.group(1) or m.group(2)
-        ref = f"표 {num}"
-        if ref not in refs:
-            refs.append(ref)
-    return refs
 
 
 def _parse_table(text: str) -> tuple[list[str], list[list[str]]] | None:
@@ -199,7 +145,6 @@ def _general_table_chunks(
                     "part_index": part_index if total > 1 else None,
                     "part_total": total if total > 1 else None,
                 },
-                "references": {"referenced_tables": [], "linked_table_indices": []},
             },
         ))
     return chunks

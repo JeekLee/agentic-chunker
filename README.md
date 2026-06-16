@@ -8,7 +8,7 @@ Markdown tables are kept as Markdown tables for user-facing citation views. Refe
 
 Requires Python 3.11+. Core has **zero runtime dependencies** (stdlib `urllib` for OpenAI-compatible LLM calls).
 
-See [`docs/superpowers/specs/2026-06-15-agentic-chunker-design.md`](docs/superpowers/specs/2026-06-15-agentic-chunker-design.md) for the design.
+See [`docs/superpowers/specs/2026-06-15-agentic-chunker-graph-architecture.md`](docs/superpowers/specs/2026-06-15-agentic-chunker-graph-architecture.md) for the current architecture direction.
 
 ## Install
 
@@ -20,15 +20,16 @@ pip install -e ".[dev]"     # + pytest
 ## Usage
 
 ```python
-from agentic_chunker import AgenticChunker, LlmConfig, Chunk
+from agentic_chunker import AgenticChunker, ChunkingResult, LlmConfig, Chunk
 
 chunker = AgenticChunker(
     llm=LlmConfig(url="http://localhost:10080/v1", api_key="...", model="qwen3-..."),
-    max_propositions_per_chunk=10,   # compatibility name; max evidence units per chunk
+    max_units_per_chunk=10,          # max evidence units per chunk
     max_concurrency=4,               # parallel grouping windows
     document_graph=True,
 )
 chunks: list[Chunk] = chunker.chunk(markdown_text)
+result: ChunkingResult = chunker.chunk_document(markdown_text)
 
 for c in chunks:
     print(c.source)                  # original displayable source
@@ -38,7 +39,20 @@ for c in chunks:
     print(c.document_graph)
 ```
 
-`dataclasses.asdict(chunk)` emits only the default payload fields. Compatibility/internal attributes such as `index`, `id`, `text` (alias for `source`), `title`, `source_spans`, `embedding_text`, and `metadata` remain available for advanced use.
+`dataclasses.asdict(chunk)` emits only the default payload fields. Compatibility/internal attributes such as `index`, `id`, `text` (alias for `source`), `title`, `embedding_text`, and `metadata` remain available for advanced use. Source offsets live on chunk nodes in `document_graph.nodes[].metadata["source_spans"]`.
+
+Use `chunk_document()` when you need the full payload in one object:
+
+```python
+result = chunker.chunk_document(markdown_text)
+print(result.document_graph)
+print(result.entities)
+print(result.triples)
+print(result.structured_extractions)
+```
+
+`max_propositions_per_chunk` remains supported as a compatibility alias for
+older callers.
 
 ## Domain Extraction
 
@@ -63,6 +77,43 @@ domain_result = chunker.domain_extraction
 
 Advanced users can pass a custom `DomainExtractor` instead of `domain_schema`.
 
+For convenience, the same schema can be declared directly on `AgenticChunker`:
+
+```python
+chunker = AgenticChunker(
+    llm=LlmConfig(url="http://localhost:10080/v1", api_key="...", model="qwen3-..."),
+    entities=["SERVICE", "DATABASE", "KAFKA_TOPIC"],
+    relations=["CALLS", "CONSUMES", "PRODUCES", "STORES_IN"],
+    domain_instructions="Extract only explicitly stated facts. Every relation needs evidence.",
+)
+```
+
+Structured extraction models are user-owned. Core stays domain-agnostic and
+returns validated, serializable `StructuredExtraction` records:
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class CoverageRule:
+    subject: str
+    action: str
+    conditions: list[str]
+    effect: str
+    effective_from: str | None
+    evidence: str
+
+chunker = AgenticChunker(
+    llm=LlmConfig(url="http://localhost:10080/v1", api_key="...", model="qwen3-..."),
+    entities=["MEDICAL_ACT", "DISEASE"],
+    relations=["COVERS", "REQUIRES"],
+    extraction_models=[CoverageRule],
+)
+
+result = chunker.chunk_document(markdown_text)
+print(result.structured_extractions)
+```
+
 ### Tuning for your LLM endpoint
 
 Agentic chunking makes LLM calls during grouping. The defaults (`LlmConfig(timeout=120)`,
@@ -75,12 +126,35 @@ one chunk per evidence unit — raise the timeout and/or lower `max_concurrency`
 
 1. **Header/block pre-split** — Markdown is split into source blocks by ATX headers and blank lines. Deterministic, no LLM.
 2. **Evidence-unit build** — text blocks remain original text units; Markdown tables become structured table units with Markdown display text and flattened `embedding_text`.
-3. **Table reference linking** — references such as `표 12` and `→ 표 12` are linked to table unit indices before LLM grouping.
+3. **Table reference detection** — references such as `표 12` and `→ 표 12` are detected while building `DocumentGraph`.
 4. **Agentic grouping** — the LLM groups evidence unit IDs, generates summary/keywords/questions, and never rewrites source text.
 5. **DocumentGraph generation** — section, order, table containment, and table reference relationships are emitted as graph nodes/edges.
 6. **Optional DomainGraph extraction** — `DomainSchema` or `DomainExtractor` runs after chunking without hardcoding domain relations into the core library.
 
 Every LLM-touching step is fail-soft: on any error the source content is preserved rather than dropped. Agentic chunking is an **offline indexing** step, not a hot-path operation.
+
+## Internal Structure
+
+The package is intentionally small and role-separated:
+
+```text
+agentic_chunker/
+  __init__.py              public API re-exports only
+  _chunker.py              top-level pipeline orchestration
+  _models.py               document/chunk graph dataclasses
+  _split.py                Markdown/text block splitting
+  _tables.py               Markdown table parsing helpers
+  _units.py                evidence-unit construction
+  _grouping.py             LLM evidence-unit grouping
+  _references.py           generic document reference detection
+  _graph.py                DocumentGraph construction and local neighborhoods
+  _domain_models.py        user-facing domain extraction models/protocols
+  _domain.py               schema/custom extractor orchestration
+  _structured.py           structured extraction validation/serialization
+  _legacy_agent.py         retained legacy grouping implementation
+  _legacy_propositions.py  retained legacy proposition extraction
+  llm.py                   OpenAI-compatible JSON chat client
+```
 
 ## Pipeline
 

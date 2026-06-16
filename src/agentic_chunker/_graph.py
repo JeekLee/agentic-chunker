@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import re
 
-from ._common import Chunk, DocumentEdge, DocumentGraph, DocumentNode
+from ._models import Chunk, DocumentEdge, DocumentGraph, DocumentNode
+from ._references import table_references
 
 
 def attach_document_graphs(chunks: list[Chunk], *, document_id: str = "document:0") -> DocumentGraph:
@@ -11,6 +12,7 @@ def attach_document_graphs(chunks: list[Chunk], *, document_id: str = "document:
     full_graph = build_document_graph(chunks, document_id=document_id)
     for chunk in chunks:
         chunk.document_graph = local_document_graph(full_graph, chunk.id)
+        chunk.source_spans = []
     return full_graph
 
 
@@ -19,7 +21,7 @@ def build_document_graph(chunks: list[Chunk], *, document_id: str = "document:0"
     edges: list[DocumentEdge] = []
     edge_keys: set[tuple[str, str, str]] = set()
     section_ids: dict[str, str] = {}
-    table_unit_to_node: dict[int, str] = {}
+    table_id_to_nodes: dict[str, list[tuple[str, dict]]] = {}
 
     def add_node(node: DocumentNode) -> None:
         nodes.setdefault(node.id, node)
@@ -58,9 +60,6 @@ def build_document_graph(chunks: list[Chunk], *, document_id: str = "document:0"
 
         for table_no, table in enumerate(_chunk_tables(chunk)):
             node_id = _table_node_id(chunk, table, table_no)
-            table_unit = table.get("unit_index")
-            if isinstance(table_unit, int):
-                table_unit_to_node[table_unit] = node_id
             add_node(DocumentNode(
                 id=node_id,
                 type="table",
@@ -68,42 +67,21 @@ def build_document_graph(chunks: list[Chunk], *, document_id: str = "document:0"
                 metadata={**table, "source_chunk_id": chunk.id},
             ))
             add_edge(chunk.id, node_id, "HAS_TABLE", {"table_id": table.get("table_id", "")})
+            table_id = table.get("table_id")
+            if isinstance(table_id, str) and table_id:
+                table_id_to_nodes.setdefault(table_id, []).append((node_id, table))
 
     for prev, curr in zip(chunks, chunks[1:]):
         add_edge(prev.id, curr.id, "NEXT")
         add_edge(curr.id, prev.id, "PREVIOUS")
 
     for chunk in chunks:
-        refs = chunk.metadata.get("references", {})
-        linked_units_used = False
-        for table_ref in refs.get("referenced_table_chunks", []):
-            if not isinstance(table_ref, dict):
-                continue
-            table_id = table_ref.get("table_id", "")
-            unit_indices = [idx for idx in table_ref.get("unit_indices", []) if isinstance(idx, int)]
-            linked_units_used = linked_units_used or bool(unit_indices)
-            for unit_idx in unit_indices:
-                node_id = table_unit_to_node.get(unit_idx)
-                if node_id:
-                    add_edge(chunk.id, node_id, "REFERS_TO", {"table_id": table_id, "unit_index": unit_idx})
-
-            if not unit_indices:
-                for chunk_idx in table_ref.get("chunk_indices", []):
-                    if isinstance(chunk_idx, int):
-                        add_edge(chunk.id, f"chunk:{chunk_idx}", "REFERS_TO", {"table_id": table_id})
-
-        if not linked_units_used:
-            table_ids = [t for t in refs.get("referenced_tables", []) if isinstance(t, str)]
-            linked_unit_indices = refs.get("linked_table_unit_indices") or refs.get("linked_table_indices", [])
-            for unit_idx in linked_unit_indices:
-                if not isinstance(unit_idx, int):
-                    continue
-                node_id = table_unit_to_node.get(unit_idx)
-                if node_id:
-                    add_edge(chunk.id, node_id, "REFERS_TO", {
-                        "table_id": table_ids[0] if len(table_ids) == 1 else "",
-                        "unit_index": unit_idx,
-                    })
+        for table_id in table_references(chunk.source):
+            for node_id, table in table_id_to_nodes.get(table_id, []):
+                add_edge(chunk.id, node_id, "REFERS_TO", {
+                    "table_id": table_id,
+                    "unit_index": table.get("unit_index"),
+                })
 
     return DocumentGraph(nodes=list(nodes.values()), edges=edges)
 

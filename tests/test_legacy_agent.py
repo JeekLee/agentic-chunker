@@ -1,5 +1,5 @@
-from agentic_chunker._common import Proposition
-from agentic_chunker._agent import assign
+from agentic_chunker._models import Proposition
+from agentic_chunker._legacy_agent import assign
 
 
 def P(text, header, start=0, end=10):
