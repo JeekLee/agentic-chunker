@@ -196,6 +196,194 @@ def test_group_units_splits_llm_windows_by_prompt_budget(monkeypatch):
     assert max(seen_window_sizes) < 8
 
 
+def test_group_units_skips_llm_for_structured_only_windows():
+    units = []
+    for i in range(4):
+        unit = U(i, f"| col |\n| --- |\n| value {i} |", "table")
+        unit.embedding_text = f"col value {i}"
+        unit.metadata["table"] = {
+            "table_id": f"표 {i}",
+            "headers": ["col"],
+            "row_count": 1,
+        }
+        units.append(unit)
+    calls = []
+
+    def fake_group(window, cfg, max_units):
+        calls.append(window)
+        return [
+            {
+                "unit_indices": [i],
+                "title": f"LLM {i}",
+                "summary": "summary",
+                "keywords": ["keyword"],
+                "questions_answered": ["무엇을 설명하나?", "어떤 표인가?"],
+            }
+            for i in range(len(window))
+        ]
+
+    chunks = group_units(
+        units,
+        cfg=LlmConfig(url="http://x/v1", api_key="k", model="m"),
+        group=fake_group,
+        window_size=10,
+    )
+
+    assert calls == []
+    assert len(chunks) == 1
+    assert [item["unit_index"] for item in chunks[0].metadata["units"]] == [0, 1, 2, 3]
+    assert [table["table_id"] for table in chunks[0].metadata["tables"]] == ["표 0", "표 1", "표 2", "표 3"]
+    assert all(chunk.metadata["_llm_metadata_generated"] is False for chunk in chunks)
+    assert all(chunk.metadata["_skip_llm_enrichment"] is True for chunk in chunks)
+
+
+def test_group_units_skipped_structured_windows_do_not_enrich_metadata(monkeypatch):
+    units = []
+    for i in range(3):
+        unit = U(i, f"| 코드 |\n| --- |\n| 급여{i} |", "table")
+        unit.summary = ""
+        unit.keywords = []
+        unit.embedding_text = ""
+        unit.metadata["table"] = {
+            "table_id": f"표 {i}",
+            "headers": ["코드"],
+            "row_count": 1,
+        }
+        units.append(unit)
+    group_calls = []
+
+    def fake_group(window, cfg, max_units):
+        group_calls.append(window)
+        return []
+
+    def fail_enrich(prompt, cfg):
+        raise AssertionError("structured fallback chunks should not require enrichment")
+
+    monkeypatch.setattr(grouping_mod, "_real_chat_json", fail_enrich)
+
+    chunks = group_units(
+        units,
+        cfg=LlmConfig(url="http://x/v1", api_key="k", model="m"),
+        group=fake_group,
+        window_size=10,
+    )
+
+    assert group_calls == []
+    assert len(chunks) == 1
+    assert all(chunk.summary for chunk in chunks)
+    assert all(chunk.keywords for chunk in chunks)
+    assert all(len(chunk.questions_answered) >= 2 for chunk in chunks)
+    assert all(chunk.metadata["_llm_metadata_generated"] is False for chunk in chunks)
+
+
+def test_group_units_skips_llm_for_structured_majority_windows():
+    units = [
+        U(0, "서식 안내 본문입니다. 표와 함께 제공됩니다."),
+        U(1, "| A |\n| --- |\n| 1 |", "table"),
+        U(2, "| B |\n| --- |\n| 2 |", "table"),
+        U(3, "| C |\n| --- |\n| 3 |", "table"),
+    ]
+    calls = []
+
+    def fake_group(window, cfg, max_units):
+        calls.append(window)
+        return [{"unit_indices": [0, 1, 2, 3], "title": "LLM", "summary": "", "keywords": []}]
+
+    chunks = group_units(
+        units,
+        cfg=LlmConfig(url="http://x/v1", api_key="k", model="m"),
+        group=fake_group,
+        window_size=10,
+    )
+
+    assert calls == []
+    assert len(chunks) == 1
+    assert [item["unit_index"] for chunk in chunks for item in chunk.metadata["units"]] == [0, 1, 2, 3]
+    assert all(chunk.metadata["_llm_metadata_generated"] is False for chunk in chunks)
+
+
+def test_group_units_structured_skip_respects_max_units():
+    units = []
+    for i in range(10):
+        unit = U(i, f"| col |\n| --- |\n| value {i} |", "table")
+        unit.metadata["table"] = {"table_id": f"표 {i}", "headers": ["col"], "row_count": 1}
+        units.append(unit)
+
+    def fake_group(window, cfg, max_units):
+        return []
+
+    chunks = group_units(
+        units,
+        cfg=LlmConfig(url="http://x/v1", api_key="k", model="m"),
+        group=fake_group,
+        max_units=4,
+        window_size=20,
+    )
+
+    assert [[item["unit_index"] for item in chunk.metadata["units"]] for chunk in chunks] == [
+        [0, 1, 2, 3],
+        [4, 5, 6, 7],
+        [8, 9],
+    ]
+
+
+def test_group_units_structured_skip_preserves_section_boundaries():
+    units = []
+    for i, section in enumerate(["A", "A", "B", "B"]):
+        unit = U(i, f"| col |\n| --- |\n| {section}{i} |", "table")
+        unit.metadata["common"]["section_path"] = [section]
+        units.append(unit)
+
+    def fake_group(window, cfg, max_units):
+        return []
+
+    chunks = group_units(
+        units,
+        cfg=LlmConfig(url="http://x/v1", api_key="k", model="m"),
+        group=fake_group,
+        window_size=10,
+    )
+
+    assert [[item["unit_index"] for item in chunk.metadata["units"]] for chunk in chunks] == [
+        [0, 1],
+        [2, 3],
+    ]
+
+
+def test_group_units_keeps_llm_for_text_heavy_windows():
+    units = [
+        U(0, "첫 번째 설명 문단입니다."),
+        U(1, "두 번째 설명 문단입니다."),
+        U(2, "| A |\n| --- |\n| 1 |", "table"),
+        U(3, "세 번째 설명 문단입니다."),
+    ]
+    calls = []
+
+    def fake_group(window, cfg, max_units):
+        calls.append(tuple(unit.index for unit in window))
+        return [
+            {
+                "unit_indices": [0, 1, 2, 3],
+                "title": "LLM",
+                "summary": "summary",
+                "keywords": ["keyword"],
+                "questions_answered": ["무엇을 설명하나?", "어떤 내용인가?"],
+            }
+        ]
+
+    chunks = group_units(
+        units,
+        cfg=LlmConfig(url="http://x/v1", api_key="k", model="m"),
+        group=fake_group,
+        window_size=10,
+    )
+
+    assert calls == [(0, 1, 2, 3)]
+    assert len(chunks) == 1
+    assert chunks[0].title == "LLM"
+    assert chunks[0].metadata["_llm_metadata_generated"] is True
+
+
 def test_group_units_retries_failed_llm_window_by_splitting():
     units = [
         U(0, "첫 번째 주제입니다. 충분한 길이의 설명입니다."),

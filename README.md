@@ -186,6 +186,9 @@ LLM grouping also caps each grouping prompt by an internal character budget, so
 table-heavy windows are split before they become large timeout-prone requests.
 If a grouping call still fails or returns no valid unit assignments, the window
 is recursively split and retried before falling back to deterministic grouping.
+Structured-heavy windows skip LLM grouping altogether and use contiguous
+deterministic groups with source-derived metadata, avoiding a second enrichment
+pass while preserving table graph links and bounded chunk size.
 
 For mixed corpora, pass file-specific gold queries so retrieval checks are not
 averaged against unrelated documents:

@@ -16,6 +16,8 @@ _TABLE_PAYLOAD_CHARS = 700
 _TEXT_PAYLOAD_CHARS = 650
 _TINY_SOURCE_CHARS = 20
 _TEXTUAL_KINDS = {"text", "heading"}
+_STRUCTURED_KINDS = {"table", "table_part", "table_caption"}
+_STRUCTURED_WINDOW_RATIO = 0.6
 _KEYWORD_RE = re.compile(r"[0-9A-Za-z가-힣]{2,}")
 _SPACED_HANGUL_RE = re.compile(r"(?<![가-힣])[가-힣](?:\s+[가-힣])+(?![가-힣])")
 _KEYWORD_STOPWORDS = {
@@ -219,6 +221,9 @@ def _group_window(
     group: Callable[[list[Chunk], LlmConfig | None, int], list | None],
     max_units: int,
 ) -> list[dict]:
+    if cfg is not None and _should_skip_llm_grouping(window):
+        return _structured_fallback_chunks(window, max_units)
+
     clusters = group(window, cfg, max_units)
     if not isinstance(clusters, list):
         return _retry_split_or_fallback(window, cfg, group, max_units)
@@ -271,6 +276,17 @@ def _group_window(
     return chunk_dicts or _fallback_chunks(window, max_units)
 
 
+def _should_skip_llm_grouping(window: list[Chunk]) -> bool:
+    if len(window) <= 1:
+        return False
+    structured = sum(1 for unit in window if _chunk_kind(unit) in _STRUCTURED_KINDS)
+    return structured > 0 and structured / len(window) >= _STRUCTURED_WINDOW_RATIO
+
+
+def _chunk_kind(unit: Chunk) -> str:
+    return unit.metadata.get("common", {}).get("chunk_kind", "text")
+
+
 def _retry_split_or_fallback(
     window: list[Chunk],
     cfg: LlmConfig | None,
@@ -285,6 +301,29 @@ def _retry_split_or_fallback(
         *_group_window(window[:mid], cfg, group, max_units),
         *_group_window(window[mid:], cfg, group, max_units),
     ]
+
+
+def _structured_fallback_chunks(units: list[Chunk], max_units: int) -> list[dict]:
+    groups: list[list[Chunk]] = []
+    current: list[Chunk] = []
+
+    for unit in units:
+        if current and not _can_extend_contiguous_group(current, unit, max_units):
+            groups.append(current)
+            current = []
+        current.append(unit)
+
+    if current:
+        groups.append(current)
+    return [_own_chunk(group, skip_enrichment=True) for group in groups]
+
+
+def _can_extend_contiguous_group(current: list[Chunk], unit: Chunk, max_units: int) -> bool:
+    if len(current) >= max(1, max_units):
+        return False
+    if len(_group_source([*current, unit])) > _MAX_CHUNK_SOURCE_CHARS:
+        return False
+    return _compatible_sections(current, [unit])
 
 
 def _fallback_chunks(units: list[Chunk], max_units: int) -> list[dict]:
@@ -374,7 +413,10 @@ def _can_merge_chunk_dicts(left: dict, right: dict, max_units: int) -> bool:
 def _merge_chunk_dicts(left: dict, right: dict) -> dict:
     units = [*left["units"], *right["units"]]
     if not left.get("llm_metadata") and not right.get("llm_metadata"):
-        return _own_chunk(units)
+        return _own_chunk(
+            units,
+            skip_enrichment=bool(left.get("skip_enrichment") and right.get("skip_enrichment")),
+        )
 
     fallback = _own_chunk(units)
     primary = right if _is_tiny_group(left["units"]) else left
@@ -391,6 +433,7 @@ def _merge_chunk_dicts(left: dict, right: dict) -> dict:
         "questions_answered": questions,
         "embedding_text": "",
         "llm_metadata": bool(left.get("llm_metadata") or right.get("llm_metadata")),
+        "skip_enrichment": False,
     }
 
 
@@ -479,7 +522,7 @@ def _is_tiny_unit(unit: Chunk) -> bool:
     return len(unit.source.strip()) < _TINY_SOURCE_CHARS
 
 
-def _own_chunk(units: list[Chunk]) -> dict:
+def _own_chunk(units: list[Chunk], *, skip_enrichment: bool = False) -> dict:
     summary = _fallback_summary(units)
     keywords = _fallback_keywords(units)
     title = units[0].title
@@ -491,6 +534,7 @@ def _own_chunk(units: list[Chunk]) -> dict:
         "questions_answered": _fallback_questions(units, title),
         "embedding_text": _embedding_text(units, title, summary, keywords),
         "llm_metadata": False,
+        "skip_enrichment": skip_enrichment,
     }
 
 
@@ -531,6 +575,8 @@ def _final_chunk(index: int, units: list[Chunk], cd: dict) -> Chunk:
     embedding_text = cd.get("embedding_text") or _embedding_text(ordered, title, summary, keywords)
     metadata = _merged_metadata(ordered)
     metadata["_llm_metadata_generated"] = bool(cd.get("llm_metadata"))
+    if cd.get("skip_enrichment"):
+        metadata["_skip_llm_enrichment"] = True
     return Chunk(
         index=index,
         text=text,
@@ -605,7 +651,18 @@ def _fallback_title(units: list[Chunk]) -> str:
 
 
 def _fallback_summary(units: list[Chunk]) -> str:
-    return " / ".join(unit.summary for unit in units if unit.summary)[:500]
+    summaries = [unit.summary.strip() for unit in units if unit.summary.strip()]
+    if summaries:
+        return " / ".join(summaries)[:500]
+
+    snippets: list[str] = []
+    for unit in units:
+        text = re.sub(r"\s+", " ", unit.text or unit.embedding_text or unit.title).strip()
+        if text and text not in snippets:
+            snippets.append(_truncate(text, 220))
+        if len(" / ".join(snippets)) >= 500:
+            break
+    return " / ".join(snippets)[:500]
 
 
 def _fallback_keywords(units: list[Chunk]) -> list[str]:
@@ -735,11 +792,17 @@ def _enrich_missing_metadata(chunks: list[Chunk], cfg: LlmConfig | None, concurr
 
 
 def _needs_enrichment(chunk: Chunk) -> bool:
+    complete = _has_complete_metadata(chunk)
+    if chunk.metadata.get("_skip_llm_enrichment") and complete:
+        return False
+    return not chunk.metadata.get("_llm_metadata_generated") or not complete
+
+
+def _has_complete_metadata(chunk: Chunk) -> bool:
     return (
-        not chunk.metadata.get("_llm_metadata_generated")
-        or not chunk.summary
-        or not chunk.keywords
-        or len(chunk.questions_answered) < 2
+        bool(chunk.summary.strip())
+        and any(keyword.strip() for keyword in chunk.keywords)
+        and len([question for question in chunk.questions_answered if question.strip()]) >= 2
     )
 
 
