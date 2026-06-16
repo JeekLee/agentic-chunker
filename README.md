@@ -132,12 +132,33 @@ LLM_MODEL=qwen3-... \
 .venv/bin/python examples/evaluate_md.py /tmp/mdout/val_01_image_hwpx.md \
   --gold-query "JS013 기재방법::JS013"
 
-.venv/bin/python examples/evaluate_md.py /tmp/mdout/*.md --no-llm --aggregate-only
+.venv/bin/python examples/evaluate_md.py /tmp/mdout/*.md \
+  --profile full-no-llm \
+  --gold-query-file /tmp/mdout/gold_queries.json
 ```
 
 The aggregate report includes tiny chunk breakdowns by kind, representative
 examples, direct lexical `gold_hit_at_5`, and graph-expanded
-`expanded_gold_hit_at_5`.
+`expanded_gold_hit_at_5`. Aggregate speed output also summarizes LLM calls by
+kind, including failure counts, timing, and prompt sizes.
+
+For regular quality checks, run both a deterministic full-corpus benchmark and
+a small LLM smoke benchmark:
+
+```bash
+.venv/bin/python examples/evaluate_md.py /tmp/mdout/*.md \
+  --profile full-no-llm \
+  --gold-query-file /tmp/mdout/gold_queries.json
+
+LLM_URL=http://localhost:10080/v1 \
+LLM_API_KEY=... \
+LLM_MODEL=qwen3-... \
+.venv/bin/python examples/evaluate_md.py \
+  /tmp/mdout/03_diagram_pdf.md \
+  /tmp/mdout/03_diagram_hwp.md \
+  --profile llm-smoke \
+  --gold-query-file /tmp/mdout/gold_queries.json
+```
 
 For mixed corpora, pass file-specific gold queries so retrieval checks are not
 averaged against unrelated documents:
@@ -153,9 +174,29 @@ averaged against unrelated documents:
 
 ```bash
 .venv/bin/python examples/evaluate_md.py /tmp/mdout/*.md \
-  --no-llm \
-  --aggregate-only \
+  --profile full-no-llm \
   --gold-query-file /tmp/mdout/gold_queries.json
+```
+
+You can also save benchmark settings as a profile file:
+
+```json
+{
+  "name": "mdout-llm-smoke",
+  "mode": "llm",
+  "paths": [
+    "/tmp/mdout/03_diagram_pdf.md",
+    "/tmp/mdout/03_diagram_hwp.md"
+  ],
+  "gold_query_file": "/tmp/mdout/gold_queries.json",
+  "aggregate_only": true,
+  "max_concurrency": 4,
+  "timeout": 180
+}
+```
+
+```bash
+.venv/bin/python examples/evaluate_md.py --profile-file /tmp/mdout/llm_smoke_profile.json
 ```
 
 ## How it works
