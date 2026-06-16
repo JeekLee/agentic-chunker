@@ -135,6 +135,25 @@ LLM_MODEL=qwen3-... \
 .venv/bin/python examples/evaluate_md.py /tmp/mdout/*.md --no-llm --aggregate-only
 ```
 
+For mixed corpora, pass file-specific gold queries so retrieval checks are not
+averaged against unrelated documents:
+
+```json
+{
+  "files": {
+    "val_01_image_hwpx.md": ["JS013 기재방법::JS013"],
+    "03_diagram_hwp.md": ["과다본인부담금 공제요청::공제요청"]
+  }
+}
+```
+
+```bash
+.venv/bin/python examples/evaluate_md.py /tmp/mdout/*.md \
+  --no-llm \
+  --aggregate-only \
+  --gold-query-file /tmp/mdout/gold_queries.json
+```
+
 ## How it works
 
 1. **Header/block pre-split** — Markdown is split into source blocks by ATX headers and blank lines. Deterministic, no LLM.

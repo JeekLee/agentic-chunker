@@ -35,7 +35,8 @@ from agentic_chunker._units import build_units
 def main() -> int:
     args = _parse_args()
     cfg = None if args.no_llm else _llm_config(args)
-    reports = [_evaluate_path(path, cfg, args) for path in args.paths]
+    gold_query_manifest = _load_gold_query_manifest(args.gold_query_file)
+    reports = [_evaluate_path(path, cfg, args, gold_query_manifest) for path in args.paths]
     if args.aggregate_only:
         payload = _aggregate_reports(reports)
     elif len(reports) == 1:
@@ -69,6 +70,11 @@ def _parse_args() -> argparse.Namespace:
         default=[],
         metavar="QUERY::EXPECTED_TEXT",
         help="Optional lexical retrieval check. EXPECTED_TEXT may be omitted.",
+    )
+    parser.add_argument(
+        "--gold-query-file",
+        type=Path,
+        help="JSON file with optional default queries and per-file lexical retrieval checks.",
     )
     return parser.parse_args()
 
@@ -135,11 +141,17 @@ def _run(
     return result, llm_calls, wall_sec
 
 
-def _evaluate_path(path: Path, cfg: LlmConfig | None, args: argparse.Namespace) -> dict[str, Any]:
+def _evaluate_path(
+    path: Path,
+    cfg: LlmConfig | None,
+    args: argparse.Namespace,
+    gold_query_manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     markdown = path.read_text(encoding=args.encoding)
     result, llm_calls, wall_sec = _run(markdown, cfg, args)
     blocks = split(markdown)
     units = build_units(blocks)
+    gold_queries = _gold_queries_for_path(path, args.gold_query, gold_query_manifest)
     return _report(
         path=path,
         markdown=markdown,
@@ -150,6 +162,7 @@ def _evaluate_path(path: Path, cfg: LlmConfig | None, args: argparse.Namespace) 
         wall_sec=wall_sec,
         args=args,
         cfg=cfg,
+        gold_queries=gold_queries,
     )
 
 
@@ -212,6 +225,12 @@ def _aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
             "avg_table_context_coverage": _average(
                 report["search_quality_expected"]["table_context_coverage"] for report in reports
             ),
+            "gold_query_files": sum(
+                1 for report in reports if report["search_quality_expected"]["lexical_gold_queries"]["count"]
+            ),
+            "gold_query_count": sum(
+                report["search_quality_expected"]["lexical_gold_queries"]["count"] for report in reports
+            ),
             "gold_hit_at_5": _aggregate_gold_hit(reports),
         },
     }
@@ -249,6 +268,7 @@ def _report(
     wall_sec: float,
     args: argparse.Namespace,
     cfg: LlmConfig | None,
+    gold_queries: list[str] | None = None,
 ) -> dict[str, Any]:
     chunks = result.chunks
     expected_unit_ids = {unit.index for unit in units}
@@ -320,7 +340,7 @@ def _report(
             "chunks_with_questions_lt_2": sum(1 for chunk in chunks if len(chunk.questions_answered) < 2),
             "avg_embedding_chars": round(statistics.mean(len(chunk.embedding_text) for chunk in chunks), 1) if chunks else 0,
             "table_context_coverage": _ratio(len(raw_refs & ref_ids), len(raw_refs)),
-            "lexical_gold_queries": _lexical_gold_report(chunks, args.gold_query),
+            "lexical_gold_queries": _lexical_gold_report(chunks, gold_queries or []),
         },
     }
 
@@ -358,6 +378,70 @@ def _ratio(numerator: int, denominator: int) -> float:
 
 def _unit_kind(unit: Any) -> str:
     return unit.metadata.get("common", {}).get("chunk_kind", "?")
+
+
+def _load_gold_query_manifest(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid gold query JSON in {path}: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise SystemExit("Gold query file must be a JSON object.")
+
+    default_value = data.get("default", data.get("defaults", []))
+    files_value = data.get("files", {})
+    if not isinstance(files_value, dict):
+        raise SystemExit("Gold query file field 'files' must be an object.")
+
+    return {
+        "default": _gold_query_list(default_value, "default"),
+        "files": {
+            str(file_key): _gold_query_list(value, f"files.{file_key}")
+            for file_key, value in files_value.items()
+        },
+    }
+
+
+def _gold_query_list(value: Any, field: str) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return list(value)
+    raise SystemExit(f"Gold query field '{field}' must be a string or list of strings.")
+
+
+def _gold_queries_for_path(
+    path: Path,
+    global_specs: list[str],
+    manifest: dict[str, Any] | None,
+) -> list[str]:
+    queries = list(global_specs)
+    if manifest is None:
+        return _unique(queries)
+
+    queries.extend(manifest.get("default", []))
+    files = manifest.get("files", {})
+    for key in _gold_query_path_keys(path):
+        queries.extend(files.get(key, []))
+    return _unique(queries)
+
+
+def _gold_query_path_keys(path: Path) -> list[str]:
+    keys = [str(path), str(path.resolve()), path.name]
+    return _unique(keys)
+
+
+def _unique(values: list[str]) -> list[str]:
+    seen = set()
+    result = []
+    for value in values:
+        if value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result
 
 
 def _lexical_gold_report(chunks: list, specs: list[str], top_k: int = 5) -> dict[str, Any]:
