@@ -11,6 +11,7 @@ from ._models import Block, Chunk
 
 _CAPTION_RE = re.compile(r"^\**\s*\[?\s*표\s*(\d+)\s*\]?\s*\**$")
 _BR_RE = re.compile(r"\s*<br\s*/?>\s*", re.IGNORECASE)
+_SENTENCE_END_RE = re.compile(r"[.!?。]|[다요임됨함음]$")
 
 
 def split_structured_blocks(blocks: list[Block]) -> tuple[list[Block], list[Chunk]]:
@@ -37,6 +38,16 @@ def split_structured_blocks(blocks: list[Block]) -> tuple[list[Block], list[Chun
             if pending_caption_block is not None:
                 structured.append(_caption_chunk(pending_caption_block, pending_table_id))
             text_blocks.append(block)
+            pending_table_id = ""
+            pending_caption_block = None
+            continue
+
+        normalized = _normalized_single_cell_table(block, table)
+        if normalized is not None:
+            if pending_caption_block is not None:
+                structured.append(_caption_chunk(pending_caption_block, pending_table_id))
+            if normalized:
+                structured.append(_text_artifact_chunk(block, normalized))
             pending_table_id = ""
             pending_caption_block = None
             continue
@@ -83,7 +94,7 @@ def _parse_table(text: str) -> tuple[list[str], list[list[str]]] | None:
         return None
 
     rows = [_parse_row(line) for line in lines[2:] if line.startswith("|")]
-    rows = [row for row in rows if row]
+    rows = [row for row in rows if any(_clean_cell(cell) for cell in row)]
     return header, rows
 
 
@@ -106,6 +117,53 @@ def _chunks_for_table(
 ) -> list[Chunk]:
     headers, rows = table
     return _general_table_chunks(block, headers, rows, table_id, caption_block)
+
+
+def _normalized_single_cell_table(
+    block: Block,
+    table: tuple[list[str], list[list[str]]],
+) -> str | None:
+    headers, rows = table
+    cleaned = [_clean_cell(header) for header in headers]
+    non_empty = [header for header in cleaned if header]
+    if rows:
+        return None
+    if len(cleaned) == 1 and non_empty:
+        return non_empty[0]
+    if not non_empty:
+        return ""
+    return None
+
+
+def _text_artifact_chunk(block: Block, text: str) -> Chunk:
+    kind = "heading" if _looks_like_heading(text) else "text"
+    return Chunk(
+        index=0,
+        text=text,
+        title=text[:80],
+        summary=text[:160],
+        keywords=_artifact_keywords(text),
+        source_spans=[(block.char_start, block.char_end)],
+        embedding_text=text,
+        metadata={
+            "common": {
+                "chunk_kind": kind,
+                "section_path": _section_path(block),
+                "display_format": "plain",
+                "normalized_from": "single_cell_table",
+            },
+        },
+    )
+
+
+def _looks_like_heading(text: str) -> bool:
+    stripped = text.strip()
+    return len(stripped) <= 80 and not _SENTENCE_END_RE.search(stripped)
+
+
+def _artifact_keywords(text: str) -> list[str]:
+    cleaned = _clean_cell(text)
+    return [cleaned] if cleaned and len(cleaned) <= 40 else []
 
 
 def _general_table_chunks(

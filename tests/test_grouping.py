@@ -99,6 +99,54 @@ def test_group_units_builds_embedding_text_from_context_when_llm_omits_it():
     assert chunks[0].questions_answered == ["제목에 대해 무엇을 알 수 있나요?"]
 
 
+def test_unit_payload_is_compact_for_table_units():
+    unit = U(0, "x" * 2000, "table")
+    unit.summary = "s" * 600
+    unit.keywords = [f"k{i}" for i in range(20)]
+    unit.embedding_text = "e" * 2000
+    unit.metadata["table"] = {
+        "table_id": "표 1",
+        "headers": [f"h{i}" for i in range(20)],
+        "row_count": 30,
+        "part_index": 1,
+        "part_total": 3,
+        "raw_rows": ["large unused payload"],
+    }
+
+    payload = grouping_mod._unit_payload(0, unit)
+
+    assert "embedding_hint" not in payload
+    assert "text_preview" not in payload
+    assert len(payload["content"]) <= 703
+    assert len(payload["summary"]) <= 353
+    assert payload["keywords"] == [f"k{i}" for i in range(12)]
+    assert payload["table"] == {
+        "table_id": "표 1",
+        "headers": [f"h{i}" for i in range(12)],
+        "row_count": 30,
+        "part_index": 1,
+        "part_total": 3,
+    }
+
+
+def test_group_units_splits_large_source_clusters(monkeypatch):
+    units = [U(0, "A" * 8), U(1, "B" * 8), U(2, "C" * 8)]
+    monkeypatch.setattr(grouping_mod, "_MAX_CHUNK_SOURCE_CHARS", 10)
+
+    def fake_group(window, cfg, max_units):
+        return [{
+            "unit_indices": [0, 1, 2],
+            "title": "large",
+            "summary": "summary",
+            "keywords": ["k"],
+        }]
+
+    chunks = group_units(units, cfg=None, group=fake_group, max_units=10)
+
+    assert [chunk.source for chunk in chunks] == ["A" * 8, "B" * 8, "C" * 8]
+    assert [chunk.title for chunk in chunks] == ["large (1/3)", "large (2/3)", "large (3/3)"]
+
+
 def test_group_units_enriches_fallback_metadata_when_cfg_is_available(monkeypatch):
     units = [U(0, "표 원문", kind="table")]
 
