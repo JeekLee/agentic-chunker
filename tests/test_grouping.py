@@ -158,6 +158,44 @@ def test_unit_payload_is_compact_for_table_units():
     }
 
 
+def test_group_units_splits_llm_windows_by_prompt_budget(monkeypatch):
+    monkeypatch.setattr(grouping_mod, "_MAX_GROUP_PROMPT_CHARS", 2600)
+    units = []
+    for i in range(8):
+        unit = U(i, f"| col |\n| --- |\n| {'x' * 2000} |", "table")
+        unit.embedding_text = "e" * 2000
+        unit.metadata["table"] = {
+            "table_id": f"표 {i}",
+            "headers": ["col"],
+            "row_count": 1,
+        }
+        units.append(unit)
+    seen_window_sizes = []
+
+    def fake_group(window, cfg, max_units):
+        seen_window_sizes.append(len(window))
+        return [
+            {
+                "unit_indices": [i],
+                "title": f"unit {i}",
+                "summary": "summary",
+                "keywords": ["keyword"],
+                "questions_answered": ["무엇을 설명하나?", "어떤 표인가?"],
+            }
+            for i in range(len(window))
+        ]
+
+    group_units(
+        units,
+        cfg=LlmConfig(url="http://x/v1", api_key="k", model="m"),
+        group=fake_group,
+        window_size=8,
+    )
+
+    assert len(seen_window_sizes) > 1
+    assert max(seen_window_sizes) < 8
+
+
 def test_group_units_splits_large_source_clusters(monkeypatch):
     units = [U(0, "A" * 8), U(1, "B" * 8), U(2, "C" * 8)]
     monkeypatch.setattr(grouping_mod, "_MAX_CHUNK_SOURCE_CHARS", 10)
