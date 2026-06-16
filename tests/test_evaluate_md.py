@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from agentic_chunker._models import Chunk, DocumentEdge, DocumentGraph, DocumentNode
 
@@ -64,13 +65,29 @@ def test_lexical_gold_report_checks_expanded_graph_context() -> None:
 
 def test_aggregate_reports_sums_counts_and_averages_ratios() -> None:
     evaluator = _load_evaluator()
-    reports = [_report(10, 1.0, 0.5, False), _report(20, 2.0, 1.0, True)]
+    reports = [_report(10, 1.0, 0.5, False), _report(20, 2.0, 1.0, True, llm_calls=2)]
 
     aggregate = evaluator._aggregate_reports(reports)
 
     assert aggregate["files"] == 2
+    assert aggregate["config"] == {
+        "profiles": ["custom"],
+        "modes": ["deterministic", "llm"],
+        "models": ["m"],
+    }
     assert aggregate["input"]["bytes"] == 30
     assert aggregate["speed"]["wall_sec"] == 3.0
+    assert aggregate["speed"]["llm_calls"] == 2
+    assert aggregate["speed"]["llm_failed"] == 1
+    assert aggregate["speed"]["llm_call_summary"]["group"] == {
+        "count": 2,
+        "ok": 1,
+        "failed": 1,
+        "avg_sec": 2.0,
+        "max_sec": 3.0,
+        "avg_prompt_chars": 150,
+        "max_prompt_chars": 200,
+    }
     assert aggregate["chunking_quality"]["unit_coverage_ok"] is False
     assert aggregate["chunking_quality"]["files_with_tiny_chunks"] == 2
     assert aggregate["chunking_quality"]["tiny_chunks_by_kind"] == {"text": 2}
@@ -125,13 +142,114 @@ def test_gold_query_manifest_matches_defaults_paths_and_names(tmp_path: Path) ->
     ]
 
 
+def test_named_profile_full_no_llm_sets_benchmark_defaults() -> None:
+    evaluator = _load_evaluator()
+    args = _args(profile="full-no-llm", paths=[Path("a.md")])
+
+    evaluator._prepare_args(args)
+
+    assert args.no_llm is True
+    assert args.aggregate_only is True
+    assert args.benchmark_profile == "full-no-llm"
+
+
+def test_profile_file_overrides_paths_mode_and_gold_queries(tmp_path: Path) -> None:
+    evaluator = _load_evaluator()
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    profile_path = tmp_path / "profile.json"
+    gold_path = tmp_path / "gold.json"
+    profile_path.write_text(
+        json.dumps({
+            "name": "mdout-smoke",
+            "mode": "llm",
+            "paths": [str(first), str(second)],
+            "gold_queries": ["질의::정답"],
+            "gold_query_file": str(gold_path),
+            "aggregate_only": True,
+            "max_concurrency": 2,
+            "timeout": 90,
+        }),
+        encoding="utf-8",
+    )
+    args = _args(profile_file=profile_path)
+
+    evaluator._prepare_args(args)
+
+    assert args.paths == [first, second]
+    assert args.no_llm is False
+    assert args.gold_query == ["질의::정답"]
+    assert args.gold_query_file == gold_path
+    assert args.aggregate_only is True
+    assert args.max_concurrency == 2
+    assert args.timeout == 90
+    assert args.benchmark_profile == "mdout-smoke"
+
+
+def test_profile_file_rejects_boolean_integer_options(tmp_path: Path) -> None:
+    evaluator = _load_evaluator()
+    profile_path = tmp_path / "profile.json"
+    profile_path.write_text(
+        json.dumps({
+            "paths": ["a.md"],
+            "timeout": True,
+        }),
+        encoding="utf-8",
+    )
+    args = _args(profile_file=profile_path)
+
+    try:
+        evaluator._prepare_args(args)
+    except SystemExit as exc:
+        assert "timeout" in str(exc)
+    else:
+        raise AssertionError("boolean timeout should be rejected")
+
+
+def _args(**overrides):
+    values = {
+        "paths": [],
+        "encoding": "utf-8",
+        "profile": "custom",
+        "profile_file": None,
+        "no_llm": False,
+        "aggregate_only": False,
+        "llm_url": "",
+        "llm_api_key": "",
+        "llm_model": "",
+        "timeout": 180,
+        "max_units": 8,
+        "window_size": 10,
+        "max_concurrency": 4,
+        "max_good_source_chars": 6000,
+        "gold_query": [],
+        "gold_query_file": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
 def _report(
     bytes_: int,
     wall_sec: float,
     table_coverage: float,
     unit_coverage_ok: bool,
+    llm_calls: int = 0,
 ) -> dict:
     missing_units = [] if unit_coverage_ok else [1]
+    llm_call_summary = {}
+    if llm_calls:
+        llm_call_summary = {
+            "group": {
+                "count": 2,
+                "ok": 1,
+                "failed": 1,
+                "avg_sec": 2.0,
+                "max_sec": 3.0,
+                "avg_prompt_chars": 150,
+                "max_prompt_chars": 200,
+            },
+        }
     return {
         "input": {
             "path": f"/tmp/{bytes_}.md",
@@ -142,7 +260,12 @@ def _report(
             "units": 1,
             "unit_kinds": {"text": 1},
         },
-        "speed": {"wall_sec": wall_sec, "llm_calls": 0},
+        "config": {
+            "profile": "custom",
+            "mode": "llm" if llm_calls else "deterministic",
+            "model": "m" if llm_calls else None,
+        },
+        "speed": {"wall_sec": wall_sec, "llm_calls": llm_calls, "llm_call_summary": llm_call_summary},
         "chunking_quality": {
             "chunks": 1,
             "tiny_chunks": 1,

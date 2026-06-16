@@ -34,6 +34,7 @@ from agentic_chunker._units import build_units
 
 def main() -> int:
     args = _parse_args()
+    _prepare_args(args)
     cfg = None if args.no_llm else _llm_config(args)
     gold_query_manifest = _load_gold_query_manifest(args.gold_query_file)
     reports = [_evaluate_path(path, cfg, args, gold_query_manifest) for path in args.paths]
@@ -52,8 +53,19 @@ def main() -> int:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("paths", nargs="+", type=Path)
+    parser.add_argument("paths", nargs="*", type=Path)
     parser.add_argument("--encoding", default="utf-8")
+    parser.add_argument(
+        "--profile",
+        choices=["custom", "full-no-llm", "llm-smoke"],
+        default="custom",
+        help="Benchmark preset. full-no-llm forces deterministic aggregate mode; llm-smoke forces LLM aggregate mode.",
+    )
+    parser.add_argument(
+        "--profile-file",
+        type=Path,
+        help="JSON benchmark profile with paths, mode, gold queries, and runtime options.",
+    )
     parser.add_argument("--no-llm", action="store_true")
     parser.add_argument("--aggregate-only", action="store_true")
     parser.add_argument("--llm-url", default=os.environ.get("LLM_URL", ""))
@@ -77,6 +89,97 @@ def _parse_args() -> argparse.Namespace:
         help="JSON file with optional default queries and per-file lexical retrieval checks.",
     )
     return parser.parse_args()
+
+
+def _prepare_args(args: argparse.Namespace) -> None:
+    profile_data = _load_benchmark_profile(args.profile_file)
+    if profile_data:
+        _apply_profile_file(args, profile_data)
+
+    if args.profile == "full-no-llm":
+        args.no_llm = True
+        args.aggregate_only = True
+    elif args.profile == "llm-smoke":
+        args.no_llm = False
+        args.aggregate_only = True
+
+    args.benchmark_profile = _benchmark_profile_name(args, profile_data)
+    if not args.paths:
+        raise SystemExit("Pass one or more Markdown paths, or provide paths in --profile-file.")
+
+
+def _load_benchmark_profile(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid benchmark profile JSON in {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit("Benchmark profile must be a JSON object.")
+    return data
+
+
+def _apply_profile_file(args: argparse.Namespace, data: dict[str, Any]) -> None:
+    if "profile" in data and args.profile == "custom":
+        profile = data["profile"]
+        if profile not in {"custom", "full-no-llm", "llm-smoke"}:
+            raise SystemExit("Benchmark profile field 'profile' must be custom, full-no-llm, or llm-smoke.")
+        args.profile = profile
+
+    if "paths" in data:
+        paths = data["paths"]
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+            raise SystemExit("Benchmark profile field 'paths' must be a list of strings.")
+        args.paths = [Path(path) for path in paths]
+
+    if "mode" in data:
+        mode = data["mode"]
+        if mode == "no-llm":
+            args.no_llm = True
+        elif mode == "llm":
+            args.no_llm = False
+        else:
+            raise SystemExit("Benchmark profile field 'mode' must be 'llm' or 'no-llm'.")
+
+    if "gold_query" in data or "gold_queries" in data:
+        args.gold_query = _profile_string_list(data.get("gold_query", data.get("gold_queries")), "gold_queries")
+    if "gold_query_file" in data:
+        args.gold_query_file = Path(_profile_string(data["gold_query_file"], "gold_query_file"))
+
+    for field in ("aggregate_only",):
+        if field in data:
+            value = data[field]
+            if not isinstance(value, bool):
+                raise SystemExit(f"Benchmark profile field '{field}' must be a boolean.")
+            setattr(args, field, value)
+
+    for field in ("timeout", "max_units", "window_size", "max_concurrency", "max_good_source_chars"):
+        if field in data:
+            value = data[field]
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise SystemExit(f"Benchmark profile field '{field}' must be an integer.")
+            setattr(args, field, value)
+
+
+def _profile_string_list(value: Any, field: str) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return list(value)
+    raise SystemExit(f"Benchmark profile field '{field}' must be a string or list of strings.")
+
+
+def _profile_string(value: Any, field: str) -> str:
+    if isinstance(value, str):
+        return value
+    raise SystemExit(f"Benchmark profile field '{field}' must be a string.")
+
+
+def _benchmark_profile_name(args: argparse.Namespace, data: dict[str, Any] | None) -> str:
+    if data and isinstance(data.get("name"), str) and data["name"].strip():
+        return data["name"].strip()
+    return args.profile
 
 
 def _llm_config(args: argparse.Namespace) -> LlmConfig:
@@ -179,6 +282,15 @@ def _call_kind(prompt: str) -> str:
 def _aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "files": len(reports),
+        "config": {
+            "profiles": _unique_sorted(
+                report["config"].get("profile") for report in reports if report["config"].get("profile")
+            ),
+            "modes": _unique_sorted(report["config"]["mode"] for report in reports),
+            "models": _unique_sorted(
+                report["config"].get("model") for report in reports if report["config"].get("model")
+            ),
+        },
         "input": {
             "bytes": sum(report["input"]["bytes"] for report in reports),
             "chars": sum(report["input"]["chars"] for report in reports),
@@ -190,6 +302,8 @@ def _aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
         "speed": {
             "wall_sec": round(sum(report["speed"]["wall_sec"] for report in reports), 3),
             "llm_calls": sum(report["speed"]["llm_calls"] for report in reports),
+            "llm_failed": _aggregate_llm_failed(reports),
+            "llm_call_summary": _aggregate_llm_call_summary(reports),
         },
         "chunking_quality": {
             "chunks": sum(report["chunking_quality"]["chunks"] for report in reports),
@@ -249,6 +363,47 @@ def _sum_counters(items: Any) -> dict[str, int]:
     for item in items:
         counter.update(item)
     return dict(counter)
+
+
+def _unique_sorted(values: Any) -> list[str]:
+    return sorted({str(value) for value in values})
+
+
+def _aggregate_llm_failed(reports: list[dict[str, Any]]) -> int:
+    return sum(
+        row.get("failed", 0)
+        for report in reports
+        for row in report["speed"]["llm_call_summary"].values()
+    )
+
+
+def _aggregate_llm_call_summary(reports: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    summaries: dict[str, list[dict[str, Any]]] = {}
+    for report in reports:
+        for kind, row in report["speed"]["llm_call_summary"].items():
+            summaries.setdefault(kind, []).append(row)
+
+    aggregate = {}
+    for kind, rows in sorted(summaries.items()):
+        count = sum(row["count"] for row in rows)
+        aggregate[kind] = {
+            "count": count,
+            "ok": sum(row["ok"] for row in rows),
+            "failed": sum(row["failed"] for row in rows),
+            "avg_sec": _weighted_average(rows, "avg_sec", "count"),
+            "max_sec": round(max(row["max_sec"] for row in rows), 3),
+            "avg_prompt_chars": round(_weighted_average(rows, "avg_prompt_chars", "count")),
+            "max_prompt_chars": max(row["max_prompt_chars"] for row in rows),
+        }
+    return aggregate
+
+
+def _weighted_average(rows: list[dict[str, Any]], value_key: str, weight_key: str) -> float:
+    weight = sum(row[weight_key] for row in rows)
+    if weight == 0:
+        return 0.0
+    value = sum(row[value_key] * row[weight_key] for row in rows) / weight
+    return round(value, 3)
 
 
 def _average(values: Any) -> float:
@@ -327,6 +482,7 @@ def _report(
             "unit_kinds": dict(Counter(_unit_kind(unit) for unit in units)),
         },
         "config": {
+            "profile": getattr(args, "benchmark_profile", args.profile),
             "mode": "deterministic" if cfg is None else "llm",
             "model": cfg.model if cfg else None,
             "max_units": args.max_units,
