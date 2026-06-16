@@ -184,6 +184,8 @@ quality signals. Pass `--window-size` or set `window_size` in a profile file to
 override it for endpoint-specific tuning.
 LLM grouping also caps each grouping prompt by an internal character budget, so
 table-heavy windows are split before they become large timeout-prone requests.
+If a grouping call still fails or returns no valid unit assignments, the window
+is recursively split and retried before falling back to deterministic grouping.
 
 For mixed corpora, pass file-specific gold queries so retrieval checks are not
 averaged against unrelated documents:

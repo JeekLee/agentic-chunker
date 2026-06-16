@@ -221,7 +221,7 @@ def _group_window(
 ) -> list[dict]:
     clusters = group(window, cfg, max_units)
     if not isinstance(clusters, list):
-        return _fallback_chunks(window, max_units)
+        return _retry_split_or_fallback(window, cfg, group, max_units)
 
     chunk_dicts: list[dict] = []
     assigned: set[int] = set()
@@ -265,8 +265,26 @@ def _group_window(
             })
 
     leftover = [window[i] for i in range(len(window)) if i not in assigned]
+    if not assigned:
+        return _retry_split_or_fallback(window, cfg, group, max_units)
     chunk_dicts.extend(_fallback_chunks(leftover, max_units))
     return chunk_dicts or _fallback_chunks(window, max_units)
+
+
+def _retry_split_or_fallback(
+    window: list[Chunk],
+    cfg: LlmConfig | None,
+    group: Callable[[list[Chunk], LlmConfig | None, int], list | None],
+    max_units: int,
+) -> list[dict]:
+    if cfg is None or len(window) <= 1:
+        return _fallback_chunks(window, max_units)
+
+    mid = max(1, len(window) // 2)
+    return [
+        *_group_window(window[:mid], cfg, group, max_units),
+        *_group_window(window[mid:], cfg, group, max_units),
+    ]
 
 
 def _fallback_chunks(units: list[Chunk], max_units: int) -> list[dict]:
