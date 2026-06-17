@@ -134,7 +134,7 @@ LLM_MODEL=qwen3-... \
 
 .venv/bin/python examples/evaluate_md.py /tmp/mdout/*.md \
   --profile full-no-llm \
-  --gold-query-file /tmp/mdout/gold_queries.json \
+  --gold-query-file examples/gold_queries/mdout.json \
   --save-report /tmp/mdout/reports/full-no-llm-current.json
 ```
 
@@ -155,7 +155,7 @@ not dominate the candidate list.
 ```bash
 .venv/bin/python examples/evaluate_md.py /tmp/mdout/*.md \
   --profile full-no-llm \
-  --gold-query-file /tmp/mdout/gold_queries.json \
+  --gold-query-file examples/gold_queries/mdout.json \
   --compare-report /tmp/mdout/reports/full-no-llm-baseline.json \
   --save-report /tmp/mdout/reports/full-no-llm-current.json
 ```
@@ -166,7 +166,7 @@ a small LLM smoke benchmark:
 ```bash
 .venv/bin/python examples/evaluate_md.py /tmp/mdout/*.md \
   --profile full-no-llm \
-  --gold-query-file /tmp/mdout/gold_queries.json
+  --gold-query-file examples/gold_queries/mdout.json
 
 LLM_URL=http://localhost:10080/v1 \
 LLM_API_KEY=... \
@@ -175,7 +175,7 @@ LLM_MODEL=qwen3-... \
   /tmp/mdout/03_diagram_pdf.md \
   /tmp/mdout/03_diagram_hwp.md \
   --profile llm-smoke \
-  --gold-query-file /tmp/mdout/gold_queries.json
+  --gold-query-file examples/gold_queries/mdout.json
 ```
 
 The `llm-smoke` preset keeps aggregate LLM mode enabled and uses
@@ -202,10 +202,13 @@ averaged against unrelated documents:
 }
 ```
 
+The repository includes `examples/gold_queries/mdout.json` for the current
+`/tmp/mdout/*.md` evaluation set.
+
 ```bash
 .venv/bin/python examples/evaluate_md.py /tmp/mdout/*.md \
   --profile full-no-llm \
-  --gold-query-file /tmp/mdout/gold_queries.json
+  --gold-query-file examples/gold_queries/mdout.json
 ```
 
 You can also save benchmark settings as a profile file:
@@ -218,7 +221,7 @@ You can also save benchmark settings as a profile file:
     "/tmp/mdout/03_diagram_pdf.md",
     "/tmp/mdout/03_diagram_hwp.md"
   ],
-  "gold_query_file": "/tmp/mdout/gold_queries.json",
+  "gold_query_file": "examples/gold_queries/mdout.json",
   "compare_report": "/tmp/mdout/reports/llm_smoke_baseline.json",
   "save_report": "/tmp/mdout/reports/llm_smoke_current.json",
   "max_concurrency": 4,
