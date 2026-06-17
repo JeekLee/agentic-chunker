@@ -149,6 +149,17 @@ def test_gold_query_manifest_matches_defaults_paths_and_names(tmp_path: Path) ->
     ]
 
 
+def test_mdout_gold_query_fixture_covers_table_documents() -> None:
+    evaluator = _load_evaluator()
+    manifest_path = Path(__file__).resolve().parents[1] / "examples" / "gold_queries" / "mdout.json"
+
+    manifest = evaluator._load_gold_query_manifest(manifest_path)
+
+    for filename in ("02_table_hwpx.md", "02_table_pdf.md", "val_02_table_pdf.md"):
+        queries = evaluator._gold_queries_for_path(Path("/tmp/mdout") / filename, [], manifest)
+        assert queries, filename
+
+
 def test_named_profile_full_no_llm_sets_benchmark_defaults() -> None:
     evaluator = _load_evaluator()
     args = _args(profile="full-no-llm", paths=[Path("a.md")])
